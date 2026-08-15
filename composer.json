@@ -1,0 +1,43 @@
+{
+    "name": "survos/elastic-bundle",
+    "description": "Elasticsearch index lifecycle for Symfony: create/populate/status, and Doctrine change spooling. The query and faceted-UI half lives in survos/search-bundle.",
+    "license": "MIT",
+    "type": "symfony-bundle",
+    "require": {
+        "php": "^8.5",
+        "elasticsearch/elasticsearch": "^9.0",
+        "survos/search-bundle": "^2.24",
+        "survos/kit-bundle": "^2.5",
+        "symfony/console": "^8.1",
+        "symfony/dependency-injection": "^8.1",
+        "symfony/framework-bundle": "^8.1",
+        "psr/log": "^3.0"
+    },
+    "suggest": {
+        "doctrine/orm": "For the postFlush spool listener that records changed entity ids.",
+        "survos/jsonl-bundle": "For JSONL spool files (shared with survos/meili-bundle's spooler).",
+        "symfony/messenger": "To flush the spool asynchronously instead of via elastic:spool:flush."
+    },
+    "require-dev": {
+        "doctrine/orm": "^3.4",
+        "survos/jsonl-bundle": "^2.6",
+        "phpunit/phpunit": "^13.0",
+        "phpstan/phpstan": "^2.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "Survos\\ElasticBundle\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Survos\\ElasticBundle\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "symfony": {
+            "require": "^8.1"
+        }
+    },
+    "prefer-stable": true
+}
