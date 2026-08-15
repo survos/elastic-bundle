@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace Survos\ElasticBundle\Service;
 
 use Doctrine\Persistence\ManagerRegistry;
+use Survos\ElasticBundle\Message\ReindexDocuments;
+use Survos\ElasticBundle\Spool\ElasticSpooler;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Survos\SearchBundle\Adapter\AdapterProvider;
 use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientInterface;
 use Survos\SearchBundle\Registry\UxSearchRegistry;
@@ -30,6 +33,8 @@ final class ElasticIndexService
         private readonly SearchProvider $searchProvider,
         private readonly AdapterProvider $adapterProvider,
         private readonly ManagerRegistry $managerRegistry,
+        private readonly ElasticSpooler $spooler,
+        private readonly ?MessageBusInterface $bus = null,
     ) {}
 
     #[AsCommand('elastic:index:create', 'Create the Elasticsearch index and mapping for a search')]
@@ -100,6 +105,171 @@ final class ElasticIndexService
             : $io->table(['search', 'index', 'exists', 'documents', 'mapped fields'], $rows);
 
         return Command::SUCCESS;
+    }
+
+    #[AsCommand('elastic:spool:flush', 'Reconcile the ids the Doctrine listener spooled')]
+    public function spoolFlushCommand(
+        SymfonyStyle $io,
+        #[Argument('Entity FQCN; omit to drain every spooled class')]
+        ?string $class = null,
+        #[Option('Ids per batch')]
+        int $batchSize = 500,
+        #[Option('Dispatch through Messenger instead of indexing inline')]
+        bool $async = false,
+    ): int {
+        $classes = $class !== null ? [$class] : $this->spooler->spooledClasses();
+        if ($classes === []) {
+            $io->success('Spool is empty.');
+
+            return Command::SUCCESS;
+        }
+
+        foreach ($classes as $entityClass) {
+            $ids = $this->spooler->pendingIds($entityClass);
+            if ($ids === []) {
+                continue;
+            }
+
+            $batches = 0;
+            $indexed = 0;
+            foreach (array_chunk($ids, max(1, $batchSize)) as $chunk) {
+                ++$batches;
+                if ($async) {
+                    if ($this->bus === null) {
+                        throw new \RuntimeException('--async needs symfony/messenger installed and a bus available.');
+                    }
+                    $this->bus->dispatch(new ReindexDocuments($entityClass, $chunk));
+                    continue;
+                }
+                $indexed += $this->indexIds($entityClass, $chunk);
+            }
+
+            // Only clear once the work is safely handed off, so a crash mid-drain replays
+            // rather than silently losing ids.
+            $this->spooler->clear($entityClass);
+            $io->success($async
+                ? sprintf('%s: dispatched %d ids in %d batches', $entityClass, count($ids), $batches)
+                : sprintf('%s: reconciled %d of %d spooled ids', $entityClass, $indexed, count($ids)));
+        }
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * Reconcile a specific set of ids: load current state, rebuild those documents, bulk-index.
+     *
+     * This is what the Messenger handler calls. It is deliberately idempotent -- the message
+     * carries ids, never documents, so duplicate messages are cheap and an entity flushed four
+     * times during an import is reconciled once, from whatever state it ended up in.
+     *
+     * @param class-string $class
+     * @param list<int|string> $ids
+     */
+    public function indexIds(string $class, array $ids): int
+    {
+        if ($ids === []) {
+            return 0;
+        }
+
+        $resolved = $this->forEntityClass($class);
+        if ($resolved === null) {
+            return 0;
+        }
+        [$descriptor, $client, $parameters] = $resolved;
+
+        $manager = $this->managerRegistry->getManagerForClass($class);
+        if ($manager === null) {
+            return 0;
+        }
+
+        $entities = $manager->getRepository($class)->findBy([$this->identifierField($manager, $class) => $ids]);
+        $parameters['documentProvider'] = $entities;
+
+        return $this->bulkIndex(
+            $client,
+            $this->indexName($descriptor->code, $parameters),
+            $this->documents($class, $parameters, null),
+            max(1, count($entities)),
+        );
+    }
+
+    /**
+     * Remove documents whose entities are gone. Ids only -- by the time the worker runs, the
+     * rows no longer exist to be loaded.
+     *
+     * @param class-string $class
+     * @param list<int|string> $ids
+     */
+    public function deleteIds(string $class, array $ids): int
+    {
+        if ($ids === []) {
+            return 0;
+        }
+
+        $resolved = $this->forEntityClass($class);
+        if ($resolved === null) {
+            return 0;
+        }
+        [$descriptor, $client, $parameters] = $resolved;
+
+        $index = $this->indexName($descriptor->code, $parameters);
+        $body = [];
+        foreach ($ids as $id) {
+            $body[] = ['delete' => ['_index' => $index, '_id' => (string) $id]];
+        }
+
+        $response = $client->bulk($body);
+        $client->refresh($index);
+
+        // A delete for an id that was never indexed comes back as result=not_found, which is
+        // fine and must not be treated as an error -- the spool is intentionally over-inclusive.
+        foreach ($response['items'] ?? [] as $item) {
+            $error = $item['delete']['error'] ?? null;
+            if ($error !== null) {
+                throw new \RuntimeException(sprintf(
+                    'Elasticsearch rejected delete of "%s": %s',
+                    $item['delete']['_id'] ?? '?',
+                    json_encode($error, JSON_UNESCAPED_SLASHES),
+                ));
+            }
+        }
+
+        return count($ids);
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{0: object, 1: ElasticsearchClientInterface, 2: array<string, mixed>}|null
+     */
+    public function forEntityClass(string $class): ?array
+    {
+        foreach ($this->registry->all() as $descriptor) {
+            if ($descriptor->class !== $class) {
+                continue;
+            }
+
+            $search = $this->searchProvider->getSearch($descriptor->name)->create([
+                'hitTemplate' => $descriptor->hitTemplate,
+            ]);
+            $adapter = $this->adapterProvider->getAdapter($search->getAdapterName());
+            $client = $this->clientOf($adapter);
+            if ($client === null) {
+                return null;
+            }
+
+            $resolver = new OptionsResolver();
+            $adapter->configureParameters($resolver);
+
+            return [$descriptor, $client, $resolver->resolve($search->getAdapterParameters())];
+        }
+
+        return null;
+    }
+
+    /** @param class-string $class */
+    private function identifierField(object $manager, string $class): string
+    {
+        return $manager->getClassMetadata($class)->getSingleIdentifierFieldName();
     }
 
     /**

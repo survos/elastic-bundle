@@ -1,0 +1,114 @@
+{% extends '@WebProfiler/Profiler/layout.html.twig' %}
+
+{% block toolbar %}
+    {% if collector.count > 0 or collector.errors > 0 %}
+        {% set icon %}
+            <span class="sf-toolbar-label">ES</span>
+            <span class="sf-toolbar-value">{{ collector.count }}</span>
+            <span class="sf-toolbar-info-piece-additional-detail">
+                <span class="sf-toolbar-label">{{ collector.duration|number_format(1) }} ms</span>
+            </span>
+        {% endset %}
+
+        {% set text %}
+            <div class="sf-toolbar-info-piece">
+                <b>Calls</b><span>{{ collector.count }}</span>
+            </div>
+            <div class="sf-toolbar-info-piece">
+                <b>Total time</b><span>{{ collector.duration|number_format(1) }} ms</span>
+            </div>
+            <div class="sf-toolbar-info-piece">
+                <b>Errors</b><span>{{ collector.errors }}</span>
+            </div>
+            <div class="sf-toolbar-info-piece">
+                <b>Empty results</b><span>{{ collector.empty }}</span>
+            </div>
+        {% endset %}
+
+        {# red on a rejected query, amber when a search matched nothing -- the silent failure #}
+        {% set status = collector.errors > 0 ? 'red' : (collector.empty > 0 ? 'yellow' : '') %}
+        {{ include('@WebProfiler/Profiler/toolbar_item.html.twig', { link: true, status: status }) }}
+    {% endif %}
+{% endblock %}
+
+{% block menu %}
+    <span class="label {{ collector.errors > 0 ? 'label-status-error' : (collector.empty > 0 ? 'label-status-warning' : '') }}">
+        <strong>Elasticsearch</strong>
+        <span class="count"><span>{{ collector.count }}</span></span>
+    </span>
+{% endblock %}
+
+{% block panel %}
+    <h2>Elasticsearch</h2>
+
+    <div class="metrics">
+        <div class="metric">
+            <span class="value">{{ collector.count }}</span>
+            <span class="label">Calls</span>
+        </div>
+        <div class="metric">
+            <span class="value">{{ collector.duration|number_format(1) }} <span class="unit">ms</span></span>
+            <span class="label">Total time</span>
+        </div>
+        <div class="metric">
+            <span class="value">{{ collector.errors }}</span>
+            <span class="label">Errors</span>
+        </div>
+        <div class="metric">
+            <span class="value">{{ collector.empty }}</span>
+            <span class="label">Empty searches</span>
+        </div>
+    </div>
+
+    {% if collector.empty > 0 and collector.errors == 0 %}
+        <div class="help">
+            A search returned zero hits. In Elasticsearch that is usually a mapping mismatch
+            rather than an genuinely empty result &mdash; a field name that does not exist, or a
+            term filter pointed at an analysed <code>text</code> field instead of its
+            <code>.keyword</code> subfield. Check the query body below against the index mapping.
+        </div>
+    {% endif %}
+
+    {% if collector.calls is empty %}
+        <div class="empty"><p>No Elasticsearch calls were made during this request.</p></div>
+    {% else %}
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Operation</th>
+                    <th>Index</th>
+                    <th>Hits</th>
+                    <th>ES took</th>
+                    <th>Round trip</th>
+                    <th>Aggregations</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for i, call in collector.calls %}
+                    <tr {% if call.error %}class="status-error"{% endif %}>
+                        <td>{{ i + 1 }}</td>
+                        <td>{{ call.operation }}</td>
+                        <td>{{ call.index ?: '—' }}</td>
+                        <td>{{ call.hits is null ? '—' : call.hits }}</td>
+                        <td>{{ call.took is null ? '—' : call.took ~ ' ms' }}</td>
+                        <td>{{ call.duration|number_format(1) }} ms</td>
+                        <td>{{ call.aggregations ? call.aggregations|join(', ') : '—' }}</td>
+                    </tr>
+                    {% if call.error or call.body %}
+                        <tr>
+                            <td colspan="7">
+                                {% if call.error %}
+                                    <div class="status-error"><strong>Error:</strong> {{ call.error }}</div>
+                                {% endif %}
+                                {% if call.body %}
+                                    <pre class="sf-dump">{{ call.body|json_encode(constant('JSON_PRETTY_PRINT') b-or constant('JSON_UNESCAPED_SLASHES')) }}</pre>
+                                {% endif %}
+                            </td>
+                        </tr>
+                    {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+    {% endif %}
+{% endblock %}

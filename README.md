@@ -29,23 +29,52 @@ in search-bundle, so querying and indexing can't drift apart.
 
 ## Doctrine sync
 
-`ElasticSpoolDoctrineListener` records changed entity ids in `postPersist`/`postUpdate` and
-appends them to a spool file in `postFlush`. It never calls Elasticsearch: a database write
-must not depend on the search engine being up, and an import that flushes the same entity
-four times must not index it four times. The spool means "this document needs
-reconciliation"; the reindex step loads current state and decides what actually changed.
+`ElasticSpoolDoctrineListener` collects changed ids in `postPersist`/`postUpdate`/`postRemove`
+and hands them off in `postFlush`. It never calls Elasticsearch inline: a database write must
+not depend on the search engine being up, and an HTTP request must not wait on it.
+
+Messages carry **ids, never documents**. The worker loads current state when it runs, so
+duplicate messages are cheap and correct -- an import that flushes the same entity four times
+produces one reindex from the final state, not four racing writes.
 
 ```yaml
 # config/packages/survos_elastic.yaml
 survos_elastic:
     spool_dir: '%kernel.project_dir%/var/elastic-spool'
     spool_enabled: true
+    async: true        # dispatch through Messenger
+    batch_size: 500    # ids per message
+```
+
+### Two modes
+
+**`async: true`** (default, needs symfony/messenger) dispatches `ReindexDocuments` /
+`RemoveDocuments`, chunked by `batch_size`, so one enormous flush becomes several bounded jobs.
+
+**`async: false`**, or no bus installed, writes a JSONL spool drained by `elastic:spool:flush`.
+This is the right mode for a bulk import: a line per id costs nothing, and reconciling 400k
+ids once at the end beats dispatching 400k messages.
+
+```bash
+bin/console elastic:spool:flush [FQCN] [--batch-size=500] [--async]
+```
+
+### Routing
+
+Unrouted messages are handled **synchronously** -- which still works, but the flush then waits
+on Elasticsearch, defeating the point. Route them to get real async:
+
+```yaml
+# config/packages/messenger.yaml
+framework:
+    messenger:
+        routing:
+            'Survos\ElasticBundle\Message\ReindexDocuments': async
+            'Survos\ElasticBundle\Message\RemoveDocuments': async
 ```
 
 ## Not built yet
 
-- Messenger handlers for async reconciliation (meili-bundle has `BatchIndexEntitiesMessage`
-  and friends); today the spool is written but nothing consumes it.
 - Settings/analyzer management and schema validation.
 - The embedding cache. Vectors stay off until it exists — see search-bundle's
   `docs/elasticsearch.md`.
