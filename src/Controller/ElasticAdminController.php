@@ -34,10 +34,20 @@ final class ElasticAdminController extends AbstractController
     #[Route('/', name: 'survos_elastic_admin_index', methods: ['GET'])]
     public function index(): Response
     {
+        $pattern = $this->indexService->indexPattern();
+        $clusterIndices = $this->indexService->clusterIndices();
+
         return $this->render('@SurvosElastic/admin/index.html.twig', [
             'reports' => $this->indexService->reports(),
-            'clusterIndices' => $this->indexService->clusterIndices(),
-            'indexPattern' => $this->indexService->indexPattern(),
+            'clusterIndices' => $clusterIndices,
+            'indexPattern' => $pattern,
+            // A pattern that matches nothing while the cluster is full of indices is the signature
+            // of a prefix introduced after those indices were created — they are still there under
+            // their old bare names, just outside this app's namespace now. Only costs a request in
+            // that case, which is exactly when it is worth one.
+            'unprefixedCount' => ('*' !== $pattern && [] === $clusterIndices)
+                ? \count($this->indexService->clusterIndices('*'))
+                : 0,
         ]);
     }
 

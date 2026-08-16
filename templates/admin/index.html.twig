@@ -93,6 +93,18 @@
            so anything here without a search is an index nobody is claiming — usually a rename that
            left the old name behind, or a locale variant. #}
         {% set unclaimed = clusterIndices|filter(row => row.searchCode is null) %}
+
+        {% if unprefixedCount > 0 %}
+            <div class="alert alert-warning mt-3">
+                Nothing on the cluster matches <code>{{ indexPattern }}</code>, but it holds
+                <strong>{{ unprefixedCount }}</strong> unprefixed {{ unprefixedCount == 1 ? 'index' : 'indices' }}.
+                Those predate <code>survos_search.index_prefix</code> and are now outside this app's namespace —
+                recreate and repopulate under the new names
+                (<code>bin/console elastic:index:create</code>, then <code>elastic:index:populate</code>),
+                then delete the old ones.
+            </div>
+        {% endif %}
+
         {% if clusterIndices is not empty %}
             <div class="card mt-3">
                 <div class="card-header">

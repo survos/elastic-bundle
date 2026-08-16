@@ -12,7 +12,9 @@ use Symfony\Component\Messenger\MessageBusInterface;
 use Survos\SearchBundle\Adapter\AdapterProvider;
 use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientInterface;
 use Survos\SearchBundle\Registry\UxSearchRegistry;
+use Survos\SearchBundle\Search\SearchInterface;
 use Survos\SearchBundle\Search\SearchProvider;
+use Survos\SearchBundle\Service\ElasticIndexNameResolver;
 use Symfony\Component\Console\Attribute\Argument;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
@@ -36,7 +38,8 @@ final class ElasticIndexService
         private readonly ManagerRegistry $managerRegistry,
         private readonly ElasticSpooler $spooler,
         private readonly ElasticIndexInspector $inspector,
-        private readonly string $indexPattern = '*',
+        private readonly ElasticIndexNameResolver $nameResolver,
+        private readonly ?string $indexPattern = null,
         private readonly ?MessageBusInterface $bus = null,
     ) {}
 
@@ -48,8 +51,8 @@ final class ElasticIndexService
         #[Option('Drop the index first')]
         bool $drop = false,
     ): int {
-        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters]) {
-            $index = $this->indexName($descriptor->code, $parameters);
+        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
             if ($drop && $client->indexExists($index)) {
                 $client->deleteIndex($index);
                 $io->note(sprintf('dropped %s', $index));
@@ -75,8 +78,8 @@ final class ElasticIndexService
         #[Option('Stop after this many documents')]
         ?int $limit = null,
     ): int {
-        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters]) {
-            $index = $this->indexName($descriptor->code, $parameters);
+        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
             if (!$client->indexExists($index)) {
                 $io->warning(sprintf('%s: index "%s" does not exist -- run elastic:index:create first.', $descriptor->code, $index));
                 continue;
@@ -96,8 +99,8 @@ final class ElasticIndexService
         ?string $code = null,
     ): int {
         $rows = [];
-        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters]) {
-            $index = $this->indexName($descriptor->code, $parameters);
+        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
             $exists = $client->indexExists($index);
             $docs = $exists ? ($client->search($index, ['size' => 0, 'track_total_hits' => true])['hits']['total']['value'] ?? 0) : 0;
             $rows[] = [$descriptor->code, $index, $exists ? 'yes' : 'no', $docs, count($parameters['mappings'] ?? [])];
@@ -178,7 +181,7 @@ final class ElasticIndexService
         if ($resolved === null) {
             return 0;
         }
-        [$descriptor, $client, $parameters] = $resolved;
+        [$descriptor, $client, $parameters, $search] = $resolved;
 
         $manager = $this->managerRegistry->getManagerForClass($class);
         if ($manager === null) {
@@ -190,7 +193,7 @@ final class ElasticIndexService
 
         return $this->bulkIndex(
             $client,
-            $this->indexName($descriptor->code, $parameters),
+            $this->nameResolver->uid($search),
             $this->documents($class, $parameters, null),
             max(1, count($entities)),
         );
@@ -213,9 +216,9 @@ final class ElasticIndexService
         if ($resolved === null) {
             return 0;
         }
-        [$descriptor, $client, $parameters] = $resolved;
+        [$descriptor, $client, $parameters, $search] = $resolved;
 
-        $index = $this->indexName($descriptor->code, $parameters);
+        $index = $this->nameResolver->uid($search);
         $body = [];
         foreach ($ids as $id) {
             $body[] = ['delete' => ['_index' => $index, '_id' => (string) $id]];
@@ -262,8 +265,10 @@ final class ElasticIndexService
 
             $resolver = new OptionsResolver();
             $adapter->configureParameters($resolver);
+            $parameters = $resolver->resolve($search->getAdapterParameters());
+            $search->setResolvedAdapterParameters($parameters);
 
-            return [$descriptor, $client, $resolver->resolve($search->getAdapterParameters())];
+            return [$descriptor, $client, $parameters, $search];
         }
 
         return null;
@@ -284,9 +289,9 @@ final class ElasticIndexService
     {
         $client = null;
         $searches = [];
-        foreach ($this->searches(null) as [$descriptor, $searchClient, $parameters]) {
+        foreach ($this->searches(null) as [$descriptor, $searchClient, $parameters, $search]) {
             $client ??= $searchClient;
-            $searches[] = [$descriptor, $parameters];
+            $searches[] = [$descriptor, $parameters, $search];
         }
 
         if (null === $client || [] === $searches) {
@@ -296,8 +301,8 @@ final class ElasticIndexService
         $bulk = $this->bulkState($client);
 
         $reports = [];
-        foreach ($searches as [$descriptor, $parameters]) {
-            $reports[] = $this->inspect($descriptor, $parameters, $bulk);
+        foreach ($searches as [$descriptor, $parameters, $search]) {
+            $reports[] = $this->inspect($descriptor, $parameters, $bulk, $search);
         }
 
         return $reports;
@@ -339,9 +344,9 @@ final class ElasticIndexService
     {
         $client = null;
         $declared = [];
-        foreach ($this->searches(null) as [$descriptor, $searchClient, $parameters]) {
+        foreach ($this->searches(null) as [$descriptor, $searchClient, $parameters, $search]) {
             $client ??= $searchClient;
-            $declared[$this->indexName($descriptor->code, $parameters)] = $descriptor->code;
+            $declared[$this->nameResolver->uid($search)] = $descriptor->code;
         }
 
         if (null === $client) {
@@ -349,7 +354,7 @@ final class ElasticIndexService
         }
 
         $rows = [];
-        foreach ($client->listIndices($pattern ?? $this->indexPattern) as $row) {
+        foreach ($client->listIndices($pattern ?? $this->indexPattern()) as $row) {
             if (str_starts_with($row['index'], '.')) {
                 continue;
             }
@@ -361,22 +366,28 @@ final class ElasticIndexService
         return $rows;
     }
 
+    /**
+     * The pattern covering this app's indices.
+     *
+     * Defaults to the resolver's own `<prefix>*`, so the admin page filters by exactly what the
+     * app writes — an explicitly configured pattern is an override, not a second source of truth.
+     */
     public function indexPattern(): string
     {
-        return $this->indexPattern;
+        return $this->indexPattern ?? $this->nameResolver->pattern();
     }
 
     /** Live schema report for one search, or null when it isn't registered or isn't ES-backed. */
     public function report(string $code): ?IndexReport
     {
-        foreach ($this->searches($code) as [$descriptor, $client, $parameters]) {
-            $index = $this->indexName($descriptor->code, $parameters);
+        foreach ($this->searches($code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
 
             // Same four calls, narrowed to the one index, plus _stats for the real byte size.
             $bulk = $this->bulkState($client, $index);
             $bulk['docs'][$index]['size'] = (int) ($client->getStats($index)['store']['size_in_bytes'] ?? 0);
 
-            return $this->inspect($descriptor, $parameters, $bulk);
+            return $this->inspect($descriptor, $parameters, $bulk, $search);
         }
 
         return null;
@@ -392,7 +403,7 @@ final class ElasticIndexService
      */
     private function bulkState(ElasticsearchClientInterface $client, ?string $pattern = null): array
     {
-        $pattern ??= $this->indexPattern;
+        $pattern ??= $this->indexPattern();
 
         $docs = [];
         foreach ($client->listIndices($pattern) as $row) {
@@ -413,9 +424,9 @@ final class ElasticIndexService
      * @param array<string, mixed> $parameters
      * @param array<string, mixed> $bulk
      */
-    private function inspect(object $descriptor, array $parameters, array $bulk): IndexReport
+    private function inspect(object $descriptor, array $parameters, array $bulk, SearchInterface $search): IndexReport
     {
-        $index = $this->indexName($descriptor->code, $parameters);
+        $index = $this->nameResolver->uid($search);
         $docs = $bulk['docs'][$index] ?? null;
 
         return $this->inspector->inspect(
@@ -477,7 +488,15 @@ final class ElasticIndexService
 
             $resolver = new OptionsResolver();
             $adapter->configureParameters($resolver);
-            yield [$descriptor, $client, $resolver->resolve($search->getAdapterParameters())];
+            $parameters = $resolver->resolve($search->getAdapterParameters());
+            // The query path resolves parameters onto the search itself; this CLI/admin path
+            // resolved them into a local array only, so ElasticIndexNameResolver saw no `index`
+            // parameter and fell back to the entity FQCN -- a different index from the one queries
+            // hit. Put them back on the search so both paths read one source.
+            $search->setResolvedAdapterParameters($parameters);
+
+            // $search comes last so existing 3-element destructuring keeps working.
+            yield [$descriptor, $client, $parameters, $search];
         }
     }
 
@@ -497,12 +516,6 @@ final class ElasticIndexService
     }
 
     /** @param array<string, mixed> $parameters */
-    private function indexName(string $code, array $parameters): string
-    {
-        $index = $parameters['index'] ?? null;
-
-        return is_string($index) && $index !== '' ? $index : $code;
-    }
 
     /**
      * @param class-string $class
