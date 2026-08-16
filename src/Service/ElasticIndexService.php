@@ -92,6 +92,58 @@ final class ElasticIndexService
         return Command::SUCCESS;
     }
 
+    #[AsCommand('elastic:index:delete', 'Delete the Elasticsearch index for a search')]
+    public function deleteCommand(
+        SymfonyStyle $io,
+        #[Argument('Search code; omit for every registered search')]
+        ?string $code = null,
+        #[Option('Skip the confirmation prompt')]
+        bool $force = false,
+    ): int {
+        $targets = [];
+        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
+            if (!$client->indexExists($index)) {
+                $io->text(\sprintf('%s: %s does not exist', $descriptor->code, $index));
+                continue;
+            }
+
+            $docs = (int) ($client->getStats($index)['docs']['count'] ?? 0);
+            $targets[] = [$descriptor->code, $index, $docs, $client];
+        }
+
+        if ([] === $targets) {
+            $io->success('Nothing to delete.');
+
+            return Command::SUCCESS;
+        }
+
+        $io->table(['search', 'index', 'documents'], array_map(
+            static fn (array $t): array => [$t[0], $t[1], number_format($t[2])],
+            $targets,
+        ));
+
+        // Deleting an index is not recoverable from Elasticsearch — the documents are only
+        // rebuildable because something else owns them (see the Source column on the admin page).
+        // So this asks, and refuses rather than assuming when it cannot.
+        // confirm() returns its default when the input is non-interactive, so defaulting to false
+        // means a scripted run aborts rather than silently deleting.
+        if (!$force && !$io->confirm(\sprintf('Delete %d index/indices permanently?', \count($targets)), false)) {
+            $io->warning('Aborted. Re-run with --force to skip this prompt (required non-interactively).');
+
+            return Command::FAILURE;
+        }
+
+        foreach ($targets as [$searchCode, $index, $docs, $client]) {
+            $client->deleteIndex($index);
+            $io->text(\sprintf('deleted %s (%s documents)', $index, number_format($docs)));
+        }
+
+        $io->success(\sprintf('Deleted %d index/indices. Recreate with elastic:index:create.', \count($targets)));
+
+        return Command::SUCCESS;
+    }
+
     #[AsCommand('elastic:index:status', 'Report index existence and document counts')]
     public function statusCommand(
         SymfonyStyle $io,
