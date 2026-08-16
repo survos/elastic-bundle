@@ -36,6 +36,8 @@ final class ElasticAdminController extends AbstractController
     {
         return $this->render('@SurvosElastic/admin/index.html.twig', [
             'reports' => $this->indexService->reports(),
+            'clusterIndices' => $this->indexService->clusterIndices(),
+            'indexPattern' => $this->indexService->indexPattern(),
         ]);
     }
 

@@ -109,6 +109,33 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         return $this->record('getStats', $index, [], fn (): array => $this->inner->getStats($index));
     }
 
+    public function listMappings(string $pattern = '*'): array
+    {
+        return $this->record('listMappings', $pattern, [], fn (): array => $this->inner->listMappings($pattern));
+    }
+
+    public function listSettings(string $pattern = '*'): array
+    {
+        return $this->record('listSettings', $pattern, [], fn (): array => $this->inner->listSettings($pattern));
+    }
+
+    public function listAliases(string $pattern = '*'): array
+    {
+        return $this->record('listAliases', $pattern, [], fn (): array => $this->inner->listAliases($pattern));
+    }
+
+    public function listIndices(string $pattern = '*'): array
+    {
+        $indices = [];
+        $this->record('listIndices', $pattern, [], function () use ($pattern, &$indices): array {
+            $indices = $this->inner->listIndices($pattern);
+
+            return ['matched' => \count($indices)];
+        });
+
+        return $indices;
+    }
+
     /**
      * @param array<string, mixed> $body
      * @param callable(): array<string, mixed> $run

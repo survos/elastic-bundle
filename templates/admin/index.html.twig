@@ -70,11 +70,69 @@
                 </div>
             </div>
 
-            <p class="text-secondary mt-3 mb-0">
+            <p class="text-secondary mt-3">
                 Document browsing, raw queries, shards and snapshots live in Elasticvue and Kibana —
                 see the Elastic menu. These pages only cover what those tools cannot know: whether the
                 index matches what this application declared.
             </p>
+        {% endif %}
+
+        {# The registry only knows what this app declared. The cluster namespace is flat and shared,
+           so anything here without a search is an index nobody is claiming — usually a rename that
+           left the old name behind, or a locale variant. #}
+        {% set unclaimed = clusterIndices|filter(row => row.searchCode is null) %}
+        {% if clusterIndices is not empty %}
+            <div class="card mt-3">
+                <div class="card-header">
+                    <h3 class="card-title">On the cluster</h3>
+                    <div class="card-actions text-secondary">
+                        pattern <code>{{ indexPattern }}</code>
+                        {% if unclaimed is not empty %}
+                            · <span class="badge bg-yellow-lt">{{ unclaimed|length }} not declared here</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-vcenter card-table">
+                        <thead>
+                            <tr>
+                                <th>Index</th>
+                                <th>Declared by</th>
+                                <th class="text-end">Documents</th>
+                                <th class="text-end">Size</th>
+                                <th>Health</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for row in clusterIndices %}
+                                <tr>
+                                    <td><code>{{ row.index }}</code></td>
+                                    <td>
+                                        {% if row.searchCode %}
+                                            <a href="{{ path('survos_elastic_admin_show', {code: row.searchCode}) }}">{{ row.searchCode }}</a>
+                                        {% else %}
+                                            <span class="badge bg-yellow-lt" title="No search in this app declares this index">not declared here</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">{{ row.docs|number_format }}</td>
+                                    <td class="text-end text-secondary">{{ row.size ?? '—' }}</td>
+                                    <td>
+                                        <span class="badge bg-{{ row.health == 'green' ? 'green' : (row.health == 'yellow' ? 'yellow' : 'secondary') }}-lt">{{ row.health ?? '?' }}</span>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="card-footer text-secondary">
+                    Every app pointed at this node shares one flat index namespace, so indices from other
+                    applications appear here too. Narrow the list with <code>survos_elastic.index_pattern</code>
+                    (e.g. <code>kpa-*</code>). System indices are always hidden.
+                    {% if unclaimed is not empty %}
+                        A yellow row is <em>not</em> automatically stale — it may belong to another app.
+                    {% endif %}
+                </div>
+            </div>
         {% endif %}
     </div>
 {% endblock %}

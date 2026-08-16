@@ -6,7 +6,7 @@ namespace Survos\ElasticBundle\Service;
 
 use Survos\ElasticBundle\Model\IndexReport;
 use Survos\ElasticBundle\Model\SchemaCheck;
-use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientInterface;
+
 
 /**
  * Compares what a search *declares* against what Elasticsearch actually *holds*.
@@ -28,17 +28,29 @@ final readonly class ElasticIndexInspector
     private const int DEFAULT_TOTAL_FIELDS_LIMIT = 1000;
 
     /**
+     * Pure: every Elasticsearch response is passed in.
+     *
+     * That is deliberate. The caller decides whether to fetch per index (a detail page) or once
+     * for a whole pattern (a list page) — inspecting N indexes must not mean 5N round trips. It
+     * also makes the checks trivially testable without a client at all.
+     *
+     * @param array<string, mixed> $mapping    the index's `mappings` block, empty if absent
+     * @param array<string, mixed> $settings   flat index settings
+     * @param list<string>         $aliases
+     * @param array<string, mixed> $stats      `_stats` primaries, or docs/store from _cat
      * @param array<string, mixed> $parameters the search's resolved adapter parameters
      */
     public function inspect(
         string $code,
         ?string $class,
         string $index,
-        ElasticsearchClientInterface $client,
+        bool $exists,
+        array $mapping,
+        array $settings,
+        array $aliases,
+        array $stats,
         array $parameters,
     ): IndexReport {
-        $exists = $client->indexExists($index);
-
         if (!$exists) {
             return new IndexReport(
                 code: $code,
@@ -48,11 +60,6 @@ final readonly class ElasticIndexInspector
                 checks: [SchemaCheck::na('index', 'Index', 'Not created yet — run elastic:index:create.')],
             );
         }
-
-        $mapping = $client->getMapping($index);
-        $settings = $client->getSettings($index);
-        $aliases = $client->getAliases($index);
-        $stats = $client->getStats($index);
 
         $declared = $parameters['mappings'] ?? [];
         $actual = $mapping['properties'] ?? [];

@@ -55,6 +55,10 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                     ->defaultValue(500)
                     ->info('Ids per message. One huge flush becomes several bounded jobs.')
                 ->end()
+                ->scalarNode('index_pattern')
+                    ->defaultValue('*')
+                    ->info('Which cluster indices the admin page considers this app\'s, e.g. "kpa-*". The cluster index namespace is flat and shared by every app pointed at the node, so this is how the page finds indices this app owns but never declared -- a leftover from a rename, a locale variant. Leave as "*" to list everything and rely on the registry to say what is declared.')
+                ->end()
                 ->scalarNode('elasticvue_url')
                     ->defaultNull()
                     ->info('Elasticvue (https://elasticvue.com) — the closest equivalent to the riccox Meilisearch UI. Point this at a self-hosted instance (docker run -p 8080:8080 cars10/elasticvue) or https://app.elasticvue.com. Null hides the menu link. Note that Elasticvue talks to Elasticsearch from the browser, so the node needs http.cors.enabled unless it is proxied.')
@@ -86,7 +90,9 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
             ->public();
 
         $services->set(ElasticIndexInspector::class);
-        $services->set(ElasticIndexService::class)->public();
+        $services->set(ElasticIndexService::class)
+            ->arg('$indexPattern', $config['index_pattern'])
+            ->public();
         $services->set(ElasticAdminController::class)->tag('controller.service_arguments');
 
         // Menu subscribers are deliberately not auto-scanned (see AbstractSurvosBundle), so this
@@ -129,6 +135,15 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                     'id' => 'survos_elastic',
                 ]);
         }
+    }
+
+    public function build(ContainerBuilder $container): void
+    {
+        parent::build($container);
+
+        // Step 4 of HasConfigurableRoutes. Without it the route loader service is registered but
+        // never discovered, so the admin routes silently do not exist.
+        $this->addRouteLoaderCompilerPass($container);
     }
 
     public function prependExtension(ContainerConfigurator $container, ContainerBuilder $builder): void

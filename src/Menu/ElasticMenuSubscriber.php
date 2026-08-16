@@ -46,27 +46,19 @@ final class ElasticMenuSubscriber
     #[AsEventListener(event: MenuEvent::ADMIN_NAVBAR_MENU)]
     public function onAdminNavbarMenu(MenuEvent $event): void
     {
-        $reports = $this->indexService->reports();
-
-        // Nothing Elasticsearch-backed is registered — don't put an empty dropdown in every app
-        // that merely has the bundle installed transitively.
-        if ($reports === []) {
+        // Registry-only, no HTTP. This subscriber must never call Elasticsearch: Twig's
+        // tabler_menu_has_items() builds the menu to test emptiness and the component builds it
+        // again to render, so the event fires ~3x per page. An earlier version called reports()
+        // here, which inspected every index on every dispatch — 80 requests on one page load.
+        if (!$this->indexService->hasElasticSearches()) {
             return;
         }
 
         $submenu = $this->addSubmenu($event->getMenu(), 'Elastic', 'tabler:search');
 
-        $warnings = array_sum(array_map(static fn ($r): int => $r->warningCount, $reports));
-
-        $this->add(
-            $submenu,
-            'survos_elastic_admin_index',
-            label: 'Indexes',
-            icon: 'tabler:list-check',
-            // Surfacing the warning count here is the whole reason the page exists — schema drift
-            // is silent otherwise.
-            badge: $warnings > 0 ? (string) $warnings : null,
-        );
+        // No warning badge here on purpose. It would need the full inspection above, and the
+        // count lives one click away on the page it describes.
+        $this->add($submenu, 'survos_elastic_admin_index', label: 'Indexes', icon: 'tabler:list-check');
 
         // Always offer Elasticvue: the configured instance when there is one, otherwise the
         // extension listing, so the menu is useful on a machine that has neither.

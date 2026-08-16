@@ -7,13 +7,22 @@ namespace Survos\ElasticBundle\Tests\Service;
 use PHPUnit\Framework\TestCase;
 use Survos\ElasticBundle\Model\SchemaCheck;
 use Survos\ElasticBundle\Service\ElasticIndexInspector;
-use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientInterface;
 
 final class ElasticIndexInspectorTest extends TestCase
 {
     public function testAMissingIndexReportsNothingElse(): void
     {
-        $report = (new ElasticIndexInspector())->inspect('pkg', null, 'pkg', self::client(exists: false), []);
+        $report = (new ElasticIndexInspector())->inspect(
+            'pkg',
+            null,
+            'pkg',
+            exists: false,
+            mapping: [],
+            settings: [],
+            aliases: [],
+            stats: [],
+            parameters: [],
+        );
 
         self::assertFalse($report->exists);
         self::assertSame(0, $report->warningCount);
@@ -27,11 +36,12 @@ final class ElasticIndexInspectorTest extends TestCase
             'pkg',
             null,
             'pkg',
-            self::client(
-                mapping: ['properties' => ['name' => ['type' => 'text']]],
-                settings: ['index.number_of_shards' => '1'],
-            ),
-            ['mappings' => ['name' => ['type' => 'text']]],
+            exists: true,
+            mapping: ['properties' => ['name' => ['type' => 'text']]],
+            settings: ['index.number_of_shards' => '1'],
+            aliases: [],
+            stats: [],
+            parameters: ['mappings' => ['name' => ['type' => 'text']]],
         );
 
         $byId = self::byId($report->checks);
@@ -51,12 +61,12 @@ final class ElasticIndexInspectorTest extends TestCase
             'pkg',
             null,
             'pkg',
-            self::client(
-                mapping: ['dynamic' => 'strict', 'properties' => ['name' => ['type' => 'text']]],
-                settings: ['index.analysis.analyzer.english_folding.tokenizer' => 'standard'],
-                aliases: ['pkg'],
-            ),
-            ['mappings' => ['name' => ['type' => 'text']]],
+            exists: true,
+            mapping: ['dynamic' => 'strict', 'properties' => ['name' => ['type' => 'text']]],
+            settings: ['index.analysis.analyzer.english_folding.tokenizer' => 'standard'],
+            aliases: ['pkg'],
+            stats: [],
+            parameters: ['mappings' => ['name' => ['type' => 'text']]],
         );
 
         $byId = self::byId($report->checks);
@@ -74,12 +84,16 @@ final class ElasticIndexInspectorTest extends TestCase
             'pkg',
             null,
             'pkg',
-            self::client(mapping: ['properties' => [
+            exists: true,
+            mapping: ['properties' => [
                 'name' => ['type' => 'text'],
                 'downloads' => ['type' => 'text'],   // declared as long below
                 'inventedByEs' => ['type' => 'float'],
-            ]]),
-            ['mappings' => [
+            ]],
+            settings: [],
+            aliases: [],
+            stats: [],
+            parameters: ['mappings' => [
                 'name' => ['type' => 'text'],
                 'downloads' => ['type' => 'long'],
                 'neverIndexed' => ['type' => 'keyword'],
@@ -112,8 +126,12 @@ final class ElasticIndexInspectorTest extends TestCase
             'pkg',
             null,
             'pkg',
-            self::client(stats: ['docs' => ['count' => 14244], 'store' => ['size_in_bytes' => 5913037]]),
-            [],
+            exists: true,
+            mapping: [],
+            settings: [],
+            aliases: [],
+            stats: ['docs' => ['count' => 14244], 'store' => ['size_in_bytes' => 5913037]],
+            parameters: [],
         );
 
         $paging = self::byId($report->checks)['paging'];
@@ -129,8 +147,12 @@ final class ElasticIndexInspectorTest extends TestCase
             'pkg',
             null,
             'pkg',
-            self::client(settings: ['index.max_result_window' => '100000'], stats: ['docs' => ['count' => 14244]]),
-            [],
+            exists: true,
+            mapping: [],
+            settings: ['index.max_result_window' => '100000'],
+            aliases: [],
+            stats: ['docs' => ['count' => 14244]],
+            parameters: [],
         );
 
         self::assertSame('ok', self::byId($report->checks)['paging']->status);
@@ -146,80 +168,4 @@ final class ElasticIndexInspectorTest extends TestCase
         return array_column(array_map(static fn (SchemaCheck $c): array => ['id' => $c->id, 'check' => $c], $checks), 'check', 'id');
     }
 
-    /**
-     * @param array<string, mixed> $mapping
-     * @param array<string, mixed> $settings
-     * @param list<string>         $aliases
-     * @param array<string, mixed> $stats
-     */
-    private static function client(
-        bool $exists = true,
-        array $mapping = [],
-        array $settings = [],
-        array $aliases = [],
-        array $stats = [],
-    ): ElasticsearchClientInterface {
-        return new class($exists, $mapping, $settings, $aliases, $stats) implements ElasticsearchClientInterface {
-            public function __construct(
-                private readonly bool $exists,
-                private readonly array $mapping,
-                private readonly array $settings,
-                private readonly array $aliases,
-                private readonly array $stats,
-            ) {
-            }
-
-            public function search(string $index, array $body): array
-            {
-                return [];
-            }
-
-            public function createIndex(string $index, array $mappings): void
-            {
-            }
-
-            public function deleteIndex(string $index): void
-            {
-            }
-
-            public function indexExists(string $index): bool
-            {
-                return $this->exists;
-            }
-
-            public function bulk(array $body): array
-            {
-                return [];
-            }
-
-            public function refresh(string $index): void
-            {
-            }
-
-            public function ping(): bool
-            {
-                return true;
-            }
-
-            public function getMapping(string $index): array
-            {
-                return $this->mapping;
-            }
-
-            public function getSettings(string $index): array
-            {
-                return $this->settings;
-            }
-
-            public function getAliases(string $index): array
-            {
-                return $this->aliases;
-            }
-
-            public function getStats(string $index): array
-            {
-                return $this->stats;
-            }
-        };
-    }
 }

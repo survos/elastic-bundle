@@ -36,6 +36,7 @@ final class ElasticIndexService
         private readonly ManagerRegistry $managerRegistry,
         private readonly ElasticSpooler $spooler,
         private readonly ElasticIndexInspector $inspector,
+        private readonly string $indexPattern = '*',
         private readonly ?MessageBusInterface $bus = null,
     ) {}
 
@@ -281,32 +282,152 @@ final class ElasticIndexService
      */
     public function reports(): array
     {
+        $client = null;
+        $searches = [];
+        foreach ($this->searches(null) as [$descriptor, $searchClient, $parameters]) {
+            $client ??= $searchClient;
+            $searches[] = [$descriptor, $parameters];
+        }
+
+        if (null === $client || [] === $searches) {
+            return [];
+        }
+
+        $bulk = $this->bulkState($client);
+
         $reports = [];
-        foreach ($this->searches(null) as [$descriptor, $client, $parameters]) {
-            $reports[] = $this->inspect($descriptor, $client, $parameters);
+        foreach ($searches as [$descriptor, $parameters]) {
+            $reports[] = $this->inspect($descriptor, $parameters, $bulk);
         }
 
         return $reports;
+    }
+
+    /**
+     * Is anything in this app backed by Elasticsearch?
+     *
+     * Registry and adapter resolution only — **no HTTP at all**. The admin navbar asks this on
+     * every request, and Twig's `tabler_menu_has_items()` builds the menu once just to test
+     * emptiness and again to render it, so the menu event fires several times per page. Anything
+     * touching Elasticsearch from a menu subscriber gets multiplied by that.
+     */
+    public function hasElasticSearches(): bool
+    {
+        foreach ($this->searches(null) as $ignored) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Every cluster index matching this app's pattern, each tagged with the search that declares
+     * it — or null when nothing does.
+     *
+     * The registry only knows what the app declared. The cluster's index namespace is flat and
+     * shared by every app pointed at the node, so an index this app owns can exist without any
+     * search claiming it: a rename that left the old name behind, a locale variant, something
+     * created by a command that has since changed. Those are exactly the ones worth seeing, and
+     * they are invisible to reports().
+     *
+     * Dot-prefixed system indices are skipped — on this node they are the majority (Kibana's own)
+     * and none of them belong to an app.
+     *
+     * @return list<array{index: string, health: ?string, status: ?string, docs: int, size: ?string, primaries: ?int, replicas: ?int, searchCode: ?string}>
+     */
+    public function clusterIndices(?string $pattern = null): array
+    {
+        $client = null;
+        $declared = [];
+        foreach ($this->searches(null) as [$descriptor, $searchClient, $parameters]) {
+            $client ??= $searchClient;
+            $declared[$this->indexName($descriptor->code, $parameters)] = $descriptor->code;
+        }
+
+        if (null === $client) {
+            return [];
+        }
+
+        $rows = [];
+        foreach ($client->listIndices($pattern ?? $this->indexPattern) as $row) {
+            if (str_starts_with($row['index'], '.')) {
+                continue;
+            }
+
+            $row['searchCode'] = $declared[$row['index']] ?? null;
+            $rows[] = $row;
+        }
+
+        return $rows;
+    }
+
+    public function indexPattern(): string
+    {
+        return $this->indexPattern;
     }
 
     /** Live schema report for one search, or null when it isn't registered or isn't ES-backed. */
     public function report(string $code): ?IndexReport
     {
         foreach ($this->searches($code) as [$descriptor, $client, $parameters]) {
-            return $this->inspect($descriptor, $client, $parameters);
+            $index = $this->indexName($descriptor->code, $parameters);
+
+            // Same four calls, narrowed to the one index, plus _stats for the real byte size.
+            $bulk = $this->bulkState($client, $index);
+            $bulk['docs'][$index]['size'] = (int) ($client->getStats($index)['store']['size_in_bytes'] ?? 0);
+
+            return $this->inspect($descriptor, $parameters, $bulk);
         }
 
         return null;
     }
 
-    /** @param array<string, mixed> $parameters */
-    private function inspect(object $descriptor, ElasticsearchClientInterface $client, array $parameters): IndexReport
+    /**
+     * One round of pattern-wide introspection, keyed by index name.
+     *
+     * `_mapping`, `_settings`, `_alias` and `_cat/indices` all accept an index pattern, so a page
+     * covering N searches costs four requests rather than 5N.
+     *
+     * @return array{mappings: array<string, array<string, mixed>>, settings: array<string, array<string, mixed>>, aliases: array<string, list<string>>, docs: array<string, array{docs: int, size: int}>}
+     */
+    private function bulkState(ElasticsearchClientInterface $client, ?string $pattern = null): array
     {
+        $pattern ??= $this->indexPattern;
+
+        $docs = [];
+        foreach ($client->listIndices($pattern) as $row) {
+            // _cat reports a human-readable size ("5.6mb"); the byte count needs _stats, which is
+            // only worth a call on the detail page.
+            $docs[$row['index']] = ['docs' => $row['docs'], 'size' => 0];
+        }
+
+        return [
+            'mappings' => $client->listMappings($pattern),
+            'settings' => $client->listSettings($pattern),
+            'aliases' => $client->listAliases($pattern),
+            'docs' => $docs,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $parameters
+     * @param array<string, mixed> $bulk
+     */
+    private function inspect(object $descriptor, array $parameters, array $bulk): IndexReport
+    {
+        $index = $this->indexName($descriptor->code, $parameters);
+        $docs = $bulk['docs'][$index] ?? null;
+
         return $this->inspector->inspect(
             code: $descriptor->code,
             class: $descriptor->class ?? null,
-            index: $this->indexName($descriptor->code, $parameters),
-            client: $client,
+            index: $index,
+            // Presence in _cat/indices answers the same question indexExists() did, for free.
+            exists: null !== $docs,
+            mapping: $bulk['mappings'][$index] ?? [],
+            settings: $bulk['settings'][$index] ?? [],
+            aliases: $bulk['aliases'][$index] ?? [],
+            stats: ['docs' => ['count' => $docs['docs'] ?? 0], 'store' => ['size_in_bytes' => $docs['size'] ?? 0]],
             parameters: $parameters,
         );
     }
