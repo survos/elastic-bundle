@@ -26,6 +26,15 @@ final class IndexReport
         public readonly int $documentCount = 0,
         public readonly int $storeSizeBytes = 0,
         public readonly array $checks = [],
+        /**
+         * Where indexed documents come from: 'provider' when the search configures a
+         * documentProvider, 'doctrine' when it falls back to iterating the entity, 'none' when
+         * there is no entity to fall back to.
+         *
+         * Surfaced because the Doctrine fallback is an assumption, not a decision — and it is the
+         * one that stops holding for folio, where rows do not come from the ORM at all.
+         */
+        public readonly string $documentSource = 'none',
     ) {
     }
 

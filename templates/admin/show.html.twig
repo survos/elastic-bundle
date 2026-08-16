@@ -13,6 +13,14 @@
                     <h2 class="page-title">{{ report.code }}</h2>
                     <div class="text-secondary mt-1">
                         <code>{{ report.index }}</code>
+                        · documents from
+                        {% if report.documentSource == 'provider' %}
+                            <span class="badge bg-blue-lt">documentProvider</span>
+                        {% elseif report.documentSource == 'doctrine' %}
+                            <span class="badge bg-secondary-lt" title="No documentProvider configured — populate iterates the entity through Doctrine">doctrine</span>
+                        {% else %}
+                            <span class="badge bg-secondary-lt">none</span>
+                        {% endif %}
                         {% if report.entityClass %}
                             · {{ report.entityClass }}
                             {% if ideLink %}

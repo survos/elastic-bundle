@@ -51,6 +51,8 @@ final readonly class ElasticIndexInspector
         array $stats,
         array $parameters,
     ): IndexReport {
+        $source = self::documentSource($class, $parameters);
+
         if (!$exists) {
             return new IndexReport(
                 code: $code,
@@ -58,6 +60,7 @@ final readonly class ElasticIndexInspector
                 index: $index,
                 exists: false,
                 checks: [SchemaCheck::na('index', 'Index', 'Not created yet — run elastic:index:create.')],
+                documentSource: $source,
             );
         }
 
@@ -83,7 +86,26 @@ final readonly class ElasticIndexInspector
                 $this->checkFieldLimit($actual, $settings),
                 $this->checkResultWindow((int) ($stats['docs']['count'] ?? 0), $settings),
             ],
+            documentSource: $source,
         );
+    }
+
+    /**
+     * Mirrors ElasticIndexService::documents(): a configured documentProvider wins, otherwise the
+     * entity is iterated through Doctrine.
+     *
+     * Deliberately does not *invoke* a callable provider — resolving it can be expensive or have
+     * side effects, and for this purpose "a provider is configured" is the whole answer.
+     *
+     * @param array<string, mixed> $parameters
+     */
+    private static function documentSource(?string $class, array $parameters): string
+    {
+        if (null !== ($parameters['documentProvider'] ?? null)) {
+            return 'provider';
+        }
+
+        return null === $class ? 'none' : 'doctrine';
     }
 
     /** @param list<string> $aliases */

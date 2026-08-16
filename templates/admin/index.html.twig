@@ -24,6 +24,7 @@
                             <tr>
                                 <th>Search</th>
                                 <th>Entity</th>
+                                <th>Source</th>
                                 <th>Index</th>
                                 <th class="text-end">Documents</th>
                                 <th class="text-end">Fields</th>
@@ -38,6 +39,17 @@
                                         <a href="{{ path('survos_elastic_admin_show', {code: report.code}) }}">{{ report.code }}</a>
                                     </td>
                                     <td class="text-secondary">{{ report.shortClass ?? '—' }}</td>
+                                    <td>
+                                        {# Doctrine is a fallback, not a decision — and the one that stops
+                                           holding for folio, where rows never come from the ORM. #}
+                                        {% if report.documentSource == 'provider' %}
+                                            <span class="badge bg-blue-lt" title="A documentProvider is configured">provider</span>
+                                        {% elseif report.documentSource == 'doctrine' %}
+                                            <span class="badge bg-secondary-lt" title="No documentProvider — falls back to iterating the entity through Doctrine">doctrine</span>
+                                        {% else %}
+                                            <span class="text-secondary">—</span>
+                                        {% endif %}
+                                    </td>
                                     <td><code>{{ report.index }}</code></td>
                                     <td class="text-end">
                                         {% if report.exists %}
