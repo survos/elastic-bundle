@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Survos\ElasticBundle\Controller;
 
 use Survos\ElasticBundle\Service\ElasticIndexService;
+use Survos\FieldBundle\Service\FieldReader;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Component\HttpFoundation\Response;
@@ -26,6 +27,7 @@ final class ElasticAdminController extends AbstractController
 {
     public function __construct(
         private readonly ElasticIndexService $indexService,
+        private readonly FieldReader $fieldReader,
         // Symfony's own IDE setting (framework.ide), so "open in IDE" needs no config of ours.
         #[Autowire('%debug.file_link_format%')] private readonly string|false|null $fileLinkFormat = null,
     ) {
@@ -62,6 +64,12 @@ final class ElasticAdminController extends AbstractController
         return $this->render('@SurvosElastic/admin/show.html.twig', [
             'report' => $report,
             'ideLink' => $this->ideLink($report->entityClass),
+            // The layer above the mapping: what #[Field] asked for. A facet can break between the
+            // attribute and the adapter, or between the adapter and Elasticsearch, and both look
+            // the same from the browser.
+            'intents' => null !== $report->entityClass
+                ? $this->indexService->fieldIntents($code, $this->fieldReader->getDescriptors($report->entityClass))
+                : [],
         ]);
     }
 

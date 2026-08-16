@@ -450,6 +450,29 @@ final class ElasticIndexService
         return $this->indexPattern ?? $this->nameResolver->pattern();
     }
 
+    /**
+     * #[Field] intents traced into the live mapping, for one search.
+     *
+     * @param list<\Survos\FieldBundle\Model\FieldDescriptor> $descriptors
+     *
+     * @return list<\Survos\ElasticBundle\Model\FieldIntent>
+     */
+    public function fieldIntents(string $code, array $descriptors): array
+    {
+        foreach ($this->searches($code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
+
+            return $this->inspector->fieldIntents(
+                $descriptors,
+                $parameters,
+                $client->getMapping($index),
+                $client->indexExists($index),
+            );
+        }
+
+        return [];
+    }
+
     /** Live schema report for one search, or null when it isn't registered or isn't ES-backed. */
     public function report(string $code): ?IndexReport
     {

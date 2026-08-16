@@ -80,6 +80,77 @@
                 </div>
             </div>
 
+            {# What #[Field] asked for, traced through the adapter and into the mapping. A facet can
+               break at either hop, and both look identical from the search page. #}
+            {% if intents is not empty %}
+                {% set broken = intents|filter(i => i.problem is not null) %}
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h3 class="card-title">Field intent</h3>
+                        <div class="card-actions">
+                            {% if broken is not empty %}
+                                <span class="badge bg-yellow-lt">{{ broken|length }} not wired through</span>
+                            {% else %}
+                                <span class="badge bg-green-lt">all wired through</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="table table-vcenter card-table">
+                            <thead>
+                                <tr>
+                                    <th>Field</th>
+                                    <th>#[Field] declares</th>
+                                    <th>Reached the search</th>
+                                    <th>In Elasticsearch</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for intent in intents %}
+                                    <tr>
+                                        <td><code>{{ intent.name }}</code></td>
+                                        <td>
+                                            {% if intent.wantsFacet %}<span class="badge bg-blue-lt">facet</span>{% endif %}
+                                            {% if intent.wantsSearchable %}<span class="badge bg-blue-lt">searchable</span>{% endif %}
+                                            {% if intent.wantsSortable %}<span class="badge bg-blue-lt">sortable</span>{% endif %}
+                                            {% if not intent.wanted %}<span class="text-secondary">—</span>{% endif %}
+                                        </td>
+                                        <td>
+                                            {% if intent.inFacetFields %}<span class="badge bg-green-lt">facet{% if intent.facetField %} → <code>{{ intent.facetField }}</code>{% endif %}</span>{% endif %}
+                                            {% if intent.inSearchFields %}<span class="badge bg-green-lt">search</span>{% endif %}
+                                            {% if intent.inSortFields %}<span class="badge bg-green-lt">sort</span>{% endif %}
+                                            {% if not (intent.inFacetFields or intent.inSearchFields or intent.inSortFields) %}<span class="text-secondary">—</span>{% endif %}
+                                        </td>
+                                        <td>
+                                            {% if intent.actualType %}
+                                                <code>{{ intent.actualType }}</code>
+                                                {% if intent.inFacetFields and not intent.aggregatable %}
+                                                    <span class="badge bg-red-lt">not aggregatable</span>
+                                                {% endif %}
+                                            {% else %}
+                                                <span class="text-secondary">—</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% if intent.problem %}
+                                        <tr>
+                                            <td></td>
+                                            <td colspan="3" class="text-warning small">{{ intent.problem }}</td>
+                                        </tr>
+                                    {% endif %}
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="card-footer text-secondary">
+                        A field can fail at either hop: the attribute may not reach the search's resolved
+                        parameters, or the search may use a field the mapping predates. Mappings are immutable,
+                        so the second case needs a rebuild — <code>elastic:index:create --drop</code> then
+                        <code>elastic:index:populate</code> until aliases land.
+                    </div>
+                </div>
+            {% endif %}
+
             <div class="card mb-3">
                 <div class="card-header">
                     <h3 class="card-title">Declared vs actual mapping</h3>

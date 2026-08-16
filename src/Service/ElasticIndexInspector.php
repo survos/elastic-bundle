@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Survos\ElasticBundle\Service;
 
+use Survos\ElasticBundle\Model\FieldIntent;
 use Survos\ElasticBundle\Model\IndexReport;
 use Survos\ElasticBundle\Model\SchemaCheck;
 
@@ -88,6 +89,78 @@ final readonly class ElasticIndexInspector
             ],
             documentSource: $source,
         );
+    }
+
+    /**
+     * Traces every #[Field]-declared intent through the adapter parameters and into the live
+     * mapping — the "why isn't my facet showing up" table.
+     *
+     * @param list<\Survos\FieldBundle\Model\FieldDescriptor> $descriptors
+     * @param array<string, mixed>                           $parameters
+     * @param array<string, mixed>                           $mapping     the live `mappings` block
+     *
+     * @return list<FieldIntent>
+     */
+    public function fieldIntents(array $descriptors, array $parameters, array $mapping, bool $indexExists): array
+    {
+        $facetFields = $parameters['facetFields'] ?? [];
+        $searchFields = $parameters['searchFields'] ?? [];
+        $sortFields = $parameters['sortFields'] ?? [];
+        $properties = $mapping['properties'] ?? [];
+
+        $intents = [];
+        foreach ($descriptors as $descriptor) {
+            $name = $descriptor->name;
+
+            // facetFields maps property => the ES field to aggregate on (often `name.keyword`);
+            // the others are plain lists.
+            $facetField = $facetFields[$name] ?? null;
+            $inFacet = \array_key_exists($name, $facetFields);
+
+            $intent = new FieldIntent(
+                name: $name,
+                wantsFacet: $descriptor->facet || $descriptor->filterable,
+                wantsSearchable: $descriptor->searchable,
+                wantsSortable: $descriptor->sortable,
+                inFacetFields: $inFacet,
+                inSearchFields: \in_array($name, $searchFields, true),
+                inSortFields: \in_array($name, $sortFields, true) || \array_key_exists($name, $sortFields),
+                facetField: \is_string($facetField) ? $facetField : null,
+                actualType: self::mappedType($properties, $name),
+                indexExists: $indexExists,
+            );
+
+            // Only worth a row if the entity asked for something or Elasticsearch knows the field.
+            if ($intent->wanted || null !== $intent->actualType) {
+                $intents[] = $intent;
+            }
+        }
+
+        return $intents;
+    }
+
+    /**
+     * The mapped type of `$name`, following a `.keyword` subfield when that is what a facet would
+     * actually aggregate on.
+     *
+     * @param array<string, mixed> $properties
+     */
+    private static function mappedType(array $properties, string $name): ?string
+    {
+        $definition = $properties[$name] ?? null;
+        if (!\is_array($definition)) {
+            return null;
+        }
+
+        $type = \is_string($definition['type'] ?? null) ? $definition['type'] : null;
+
+        // A text field with a keyword subfield is aggregatable through that subfield, which is
+        // exactly what the derived facetFields point at — so report the usable type.
+        if ('text' === $type && \is_array($definition['fields']['keyword'] ?? null)) {
+            return 'text + .keyword';
+        }
+
+        return $type;
     }
 
     /**
