@@ -14,6 +14,7 @@ use Psr\Log\LoggerInterface;
 use Survos\ElasticBundle\Message\ReindexDocuments;
 use Survos\ElasticBundle\Message\RemoveDocuments;
 use Survos\ElasticBundle\Spool\ElasticSpooler;
+use Survos\SearchBundle\Registry\UxSearchRegistry;
 use Symfony\Component\Messenger\MessageBusInterface;
 
 /**
@@ -43,8 +44,12 @@ final class ElasticSpoolDoctrineListener
     /** @var array<class-string, array<string, bool>> */
     private array $removedIds = [];
 
+    /** @var array<class-string, true>|null */
+    private ?array $searchableClasses = null;
+
     public function __construct(
         private readonly ElasticSpooler $spooler,
+        private readonly UxSearchRegistry $registry,
         private readonly ?MessageBusInterface $bus = null,
         private readonly ?LoggerInterface $logger = null,
         private readonly bool $enabled = true,
@@ -125,6 +130,24 @@ final class ElasticSpoolDoctrineListener
         ]);
     }
 
+    /**
+     * Only entities that actually back a search are worth spooling.
+     *
+     * Without this the listener reacts to every flush, including the ProcessedMessage rows
+     * zenstruck/messenger-monitor writes for each handled message -- so handling a
+     * ReindexDocuments produced a ProcessedMessage, whose flush dispatched another
+     * ReindexDocuments, and the worker fed itself forever.
+     */
+    private function isSearchable(string $class): bool
+    {
+        $this->searchableClasses ??= array_fill_keys(
+            array_filter(array_map(static fn ($d) => $d->class, $this->registry->all())),
+            true,
+        );
+
+        return isset($this->searchableClasses[$class]);
+    }
+
     /** @param array<class-string, array<string, bool>> $bucket */
     private function collect(
         PostPersistEventArgs|PostUpdateEventArgs|PostRemoveEventArgs $args,
@@ -135,6 +158,10 @@ final class ElasticSpoolDoctrineListener
         }
 
         $object = $args->getObject();
+        if (!$this->isSearchable($object::class)) {
+            return;
+        }
+
         $metadata = $args->getObjectManager()->getClassMetadata($object::class);
         $identifiers = $metadata->getIdentifierValues($object);
         if (count($identifiers) !== 1) {
