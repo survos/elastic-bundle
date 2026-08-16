@@ -60,33 +60,133 @@ final class ElasticIndexService
         $strict ??= true;
 
         foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
-            $index = $this->nameResolver->uid($search);
-            if ($drop && $client->indexExists($index)) {
-                $client->deleteIndex($index);
-                $io->note(sprintf('dropped %s', $index));
+            $alias = $this->nameResolver->uid($search);
+
+            // An index literally named the alias predates alias support. Elasticsearch will not
+            // let an alias and an index share a name, so this cannot be migrated in place.
+            if ($client->indexExists($alias) && [] === $client->indicesForAlias($alias)) {
+                $io->error(sprintf(
+                    '%s: "%s" is a concrete index, not an alias — it predates alias support and blocks the name. Delete it (elastic:index:delete %s --force) and re-run; the data is rebuildable from %s.',
+                    $descriptor->code,
+                    $alias,
+                    $descriptor->code,
+                    $parameters['documentProvider'] ?? 'Doctrine',
+                ));
+
+                return Command::FAILURE;
             }
-            if ($client->indexExists($index)) {
-                $io->text(sprintf('%s already exists', $index));
+
+            $existing = $client->indicesForAlias($alias);
+            if ([] !== $existing && !$drop) {
+                $io->text(sprintf('%s already points at %s — use elastic:index:rebuild to replace it', $alias, implode(', ', $existing)));
                 continue;
             }
 
-            $properties = $parameters['mappings'] ?? [];
-            $mappings = ['properties' => $properties];
-            if ($strict) {
-                $mappings['dynamic'] = 'strict';
+            $concrete = $this->createGeneration($client, $search, $parameters, $strict);
+            $actions = [['add' => ['index' => $concrete, 'alias' => $alias]]];
+            foreach ($existing as $old) {
+                $actions[] = ['remove' => ['index' => $old, 'alias' => $alias]];
+            }
+            $client->updateAliases($actions);
+
+            foreach ($drop ? $existing : [] as $old) {
+                $client->deleteIndex($old);
+                $io->note(sprintf('dropped %s', $old));
             }
 
-            $client->createIndex($index, $mappings);
             $io->success(sprintf(
-                '%s: created %s with %d mapped fields (dynamic: %s)',
+                '%s: %s -> %s, %d mapped fields (dynamic: %s)',
                 $descriptor->code,
-                $index,
-                count($properties),
+                $alias,
+                $concrete,
+                count($parameters['mappings'] ?? []),
                 $strict ? 'strict' : 'true',
             ));
         }
 
         return Command::SUCCESS;
+    }
+
+    #[AsCommand('elastic:index:rebuild', 'Rebuild an index into a new generation and swap the alias with no downtime')]
+    public function rebuildCommand(
+        SymfonyStyle $io,
+        #[Argument('Search code; omit for every registered search')]
+        ?string $code = null,
+        #[Option('Documents per bulk request')]
+        int $batchSize = 250,
+        #[Option('Reject documents carrying fields the mapping never declared')]
+        ?bool $strict = null,
+        #[Option('Keep the previous generation instead of deleting it')]
+        bool $keepOld = false,
+    ): int {
+        $strict ??= true;
+
+        foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
+            $alias = $this->nameResolver->uid($search);
+            $previous = $client->indicesForAlias($alias);
+
+            if ([] === $previous && $client->indexExists($alias)) {
+                $io->error(sprintf('%s: "%s" is a concrete index, not an alias. Run elastic:index:create first.', $descriptor->code, $alias));
+
+                return Command::FAILURE;
+            }
+
+            // Build and fill the new generation BEFORE touching the alias. This is the whole point:
+            // the old index keeps serving every query until the new one is complete, and a failure
+            // half way through leaves the live alias untouched.
+            $concrete = $this->createGeneration($client, $search, $parameters, $strict);
+            $io->text(sprintf('building %s', $concrete));
+
+            try {
+                $count = $this->bulkIndex($client, $concrete, $this->documents($descriptor->class, $parameters, null), max(1, $batchSize));
+            } catch (\Throwable $e) {
+                // Leave the alias where it is and clean up the half-built generation.
+                $client->deleteIndex($concrete);
+                $io->error(sprintf('%s: populate failed, alias unchanged. %s', $descriptor->code, $e->getMessage()));
+
+                return Command::FAILURE;
+            }
+
+            $actions = [['add' => ['index' => $concrete, 'alias' => $alias]]];
+            foreach ($previous as $old) {
+                $actions[] = ['remove' => ['index' => $old, 'alias' => $alias]];
+            }
+            $client->updateAliases($actions);
+
+            foreach ($keepOld ? [] : $previous as $old) {
+                $client->deleteIndex($old);
+            }
+
+            $io->success(sprintf(
+                '%s: %s -> %s with %d documents%s',
+                $descriptor->code,
+                $alias,
+                $concrete,
+                $count,
+                [] === $previous ? '' : ($keepOld ? sprintf(' (kept %s)', implode(', ', $previous)) : sprintf(' (dropped %s)', implode(', ', $previous))),
+            ));
+        }
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * Creates a fresh, empty generation with the current mapping and returns its name.
+     *
+     * @param array<string, mixed> $parameters
+     */
+    private function createGeneration(ElasticsearchClientInterface $client, SearchInterface $search, array $parameters, bool $strict): string
+    {
+        $concrete = $this->nameResolver->concreteFor($this->nameResolver->uid($search));
+
+        $mappings = ['properties' => $parameters['mappings'] ?? []];
+        if ($strict) {
+            $mappings['dynamic'] = 'strict';
+        }
+
+        $client->createIndex($concrete, $mappings);
+
+        return $concrete;
     }
 
     #[AsCommand('elastic:index:populate', 'Bulk-load documents into the Elasticsearch index')]
@@ -123,14 +223,25 @@ final class ElasticIndexService
     ): int {
         $targets = [];
         foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
-            $index = $this->nameResolver->uid($search);
-            if (!$client->indexExists($index)) {
-                $io->text(\sprintf('%s: %s does not exist', $descriptor->code, $index));
+            $alias = $this->nameResolver->uid($search);
+
+            // Elasticsearch refuses to delete through an alias -- "specify the corresponding
+            // concrete indices instead" -- so resolve to the generations behind it. An alias with
+            // no generations means a pre-alias concrete index still holding the name.
+            $concretes = $client->indicesForAlias($alias);
+            if ([] === $concretes) {
+                $concretes = $client->indexExists($alias) ? [$alias] : [];
+            }
+
+            if ([] === $concretes) {
+                $io->text(\sprintf('%s: %s does not exist', $descriptor->code, $alias));
                 continue;
             }
 
-            $docs = (int) ($client->getStats($index)['docs']['count'] ?? 0);
-            $targets[] = [$descriptor->code, $index, $docs, $client];
+            foreach ($concretes as $concrete) {
+                $docs = (int) ($client->getStats($concrete)['docs']['count'] ?? 0);
+                $targets[] = [$descriptor->code, $concrete, $docs, $client];
+            }
         }
 
         if ([] === $targets) {
@@ -426,13 +537,23 @@ final class ElasticIndexService
             return [];
         }
 
+        $aliases = $client->listAliases($pattern ?? $this->indexPattern());
+
         $rows = [];
         foreach ($client->listIndices($pattern ?? $this->indexPattern()) as $row) {
             if (str_starts_with($row['index'], '.')) {
                 continue;
             }
 
-            $row['searchCode'] = $declared[$row['index']] ?? null;
+            // A generation is named after its alias, not after the search, so attribute it through
+            // whichever alias points at it before falling back to a direct name match.
+            $searchCode = $declared[$row['index']] ?? null;
+            foreach ($aliases[$row['index']] ?? [] as $alias) {
+                $searchCode ??= $declared[$alias] ?? null;
+            }
+
+            $row['searchCode'] = $searchCode;
+            $row['aliases'] = $aliases[$row['index']] ?? [];
             $rows[] = $row;
         }
 
@@ -477,11 +598,14 @@ final class ElasticIndexService
     public function report(string $code): ?IndexReport
     {
         foreach ($this->searches($code) as [$descriptor, $client, $parameters, $search]) {
-            $index = $this->nameResolver->uid($search);
+            $alias = $this->nameResolver->uid($search);
 
-            // Same four calls, narrowed to the one index, plus _stats for the real byte size.
-            $bulk = $this->bulkState($client, $index);
-            $bulk['docs'][$index]['size'] = (int) ($client->getStats($index)['store']['size_in_bytes'] ?? 0);
+            // Narrowing to the alias also returns its generation, which is what the keys use.
+            $bulk = $this->bulkState($client, $alias);
+            $physical = $bulk['byAlias'][$alias] ?? $alias;
+            if (isset($bulk['docs'][$physical])) {
+                $bulk['docs'][$physical]['size'] = (int) ($client->getStats($alias)['store']['size_in_bytes'] ?? 0);
+            }
 
             return $this->inspect($descriptor, $parameters, $bulk, $search);
         }
@@ -508,10 +632,22 @@ final class ElasticIndexService
             $docs[$row['index']] = ['docs' => $row['docs'], 'size' => 0];
         }
 
+        $aliases = $client->listAliases($pattern);
+
+        // Everything Elasticsearch returns is keyed by the CONCRETE index, but callers ask by
+        // alias. Invert once here so a lookup by alias finds the generation currently behind it.
+        $byAlias = [];
+        foreach ($aliases as $index => $names) {
+            foreach ($names as $alias) {
+                $byAlias[$alias] = $index;
+            }
+        }
+
         return [
             'mappings' => $client->listMappings($pattern),
             'settings' => $client->listSettings($pattern),
-            'aliases' => $client->listAliases($pattern),
+            'aliases' => $aliases,
+            'byAlias' => $byAlias,
             'docs' => $docs,
         ];
     }
@@ -522,18 +658,21 @@ final class ElasticIndexService
      */
     private function inspect(object $descriptor, array $parameters, array $bulk, SearchInterface $search): IndexReport
     {
-        $index = $this->nameResolver->uid($search);
-        $docs = $bulk['docs'][$index] ?? null;
+        $alias = $this->nameResolver->uid($search);
+        // The alias is what the app talks to; the generation behind it is what Elasticsearch keys
+        // everything by. Falls back to the alias for indexes created before alias support.
+        $physical = $bulk['byAlias'][$alias] ?? $alias;
+        $docs = $bulk['docs'][$physical] ?? null;
 
         return $this->inspector->inspect(
             code: $descriptor->code,
             class: $descriptor->class ?? null,
-            index: $index,
+            index: $physical,
             // Presence in _cat/indices answers the same question indexExists() did, for free.
             exists: null !== $docs,
-            mapping: $bulk['mappings'][$index] ?? [],
-            settings: $bulk['settings'][$index] ?? [],
-            aliases: $bulk['aliases'][$index] ?? [],
+            mapping: $bulk['mappings'][$physical] ?? [],
+            settings: $bulk['settings'][$physical] ?? [],
+            aliases: $bulk['aliases'][$physical] ?? [],
             stats: ['docs' => ['count' => $docs['docs'] ?? 0], 'store' => ['size_in_bytes' => $docs['size'] ?? 0]],
             parameters: $parameters,
         );

@@ -130,6 +130,27 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         return $this->record('listAliases', $pattern, [], fn (): array => $this->inner->listAliases($pattern));
     }
 
+    public function updateAliases(array $actions): void
+    {
+        $this->record('updateAliases', '', ['actions' => $actions], function () use ($actions): array {
+            $this->inner->updateAliases($actions);
+
+            return [];
+        });
+    }
+
+    public function indicesForAlias(string $alias): array
+    {
+        $indices = [];
+        $this->record('indicesForAlias', $alias, [], function () use ($alias, &$indices): array {
+            $indices = $this->inner->indicesForAlias($alias);
+
+            return ['indices' => $indices];
+        });
+
+        return $indices;
+    }
+
     public function listIndices(string $pattern = '*'): array
     {
         $indices = [];
