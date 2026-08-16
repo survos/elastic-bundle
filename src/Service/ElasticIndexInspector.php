@@ -22,6 +22,11 @@ use Survos\ElasticBundle\Model\SchemaCheck;
  */
 final readonly class ElasticIndexInspector
 {
+    public function __construct(
+        private AnalysisBuilder $analysis = new AnalysisBuilder(),
+    ) {
+    }
+
     /** ES rejects `from + size` beyond this without an explicit index setting. */
     private const int DEFAULT_MAX_RESULT_WINDOW = 10000;
 
@@ -207,8 +212,30 @@ final readonly class ElasticIndexInspector
             }
         }
 
+        // The language baked into this index at creation, which is the only thing that can differ
+        // from configuration -- analysis is static, so a config change does nothing until rebuild.
+        $indexed = $settings['index.analysis.filter.'.AnalysisBuilder::STEMMER_FILTER.'.language'] ?? null;
+        $wanted = $this->analysis->language();
+
+        if (null !== $wanted && $indexed !== $wanted) {
+            return SchemaCheck::warn(
+                'analysis',
+                'Analyzers',
+                sprintf(
+                    'Configured for "%s" but this index was built with %s. index.analysis is a static setting, so the configuration has had no effect on it — run elastic:index:rebuild.',
+                    $wanted,
+                    null === $indexed ? 'no custom analyzer' : sprintf('"%s"', $indexed),
+                ),
+                issue: 2,
+            );
+        }
+
         if ($analyzers !== []) {
-            return SchemaCheck::ok('analysis', 'Analyzers', sprintf('Custom analyzers configured: %s.', implode(', ', array_keys($analyzers))));
+            return SchemaCheck::ok('analysis', 'Analyzers', sprintf(
+                'Custom analyzer configured: %s%s.',
+                implode(', ', array_keys($analyzers)),
+                null !== $indexed ? sprintf(' (%s stemming)', $indexed) : '',
+            ));
         }
 
         return SchemaCheck::warn(

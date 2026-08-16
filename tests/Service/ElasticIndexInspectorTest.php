@@ -6,6 +6,7 @@ namespace Survos\ElasticBundle\Tests\Service;
 
 use PHPUnit\Framework\TestCase;
 use Survos\ElasticBundle\Model\SchemaCheck;
+use Survos\ElasticBundle\Service\AnalysisBuilder;
 use Survos\ElasticBundle\Service\ElasticIndexInspector;
 
 final class ElasticIndexInspectorTest extends TestCase
@@ -156,6 +157,49 @@ final class ElasticIndexInspectorTest extends TestCase
         );
 
         self::assertSame('ok', self::byId($report->checks)['paging']->status);
+    }
+
+    /** A configured language that the index was not built with is the signal to rebuild. */
+    public function testAnalyzerDriftAgainstTheConfiguredLanguageIsFlagged(): void
+    {
+        $report = (new ElasticIndexInspector(new AnalysisBuilder('hungarian')))->inspect(
+            'pkg',
+            null,
+            'pkg',
+            exists: true,
+            mapping: [],
+            settings: ['index.analysis.filter.'.AnalysisBuilder::STEMMER_FILTER.'.language' => 'english'],
+            aliases: [],
+            stats: [],
+            parameters: [],
+        );
+
+        $analysis = self::byId($report->checks)['analysis'];
+        self::assertSame('warn', $analysis->status);
+        self::assertStringContainsString('static setting', $analysis->detail);
+        self::assertStringContainsString('rebuild', $analysis->detail);
+    }
+
+    public function testMatchingAnalyzerLanguageIsAccepted(): void
+    {
+        $report = (new ElasticIndexInspector(new AnalysisBuilder('english')))->inspect(
+            'pkg',
+            null,
+            'pkg',
+            exists: true,
+            mapping: [],
+            settings: [
+                'index.analysis.analyzer.'.AnalysisBuilder::ANALYZER.'.tokenizer' => 'standard',
+                'index.analysis.filter.'.AnalysisBuilder::STEMMER_FILTER.'.language' => 'english',
+            ],
+            aliases: [],
+            stats: [],
+            parameters: [],
+        );
+
+        $analysis = self::byId($report->checks)['analysis'];
+        self::assertSame('ok', $analysis->status);
+        self::assertStringContainsString('english stemming', $analysis->detail);
     }
 
     /**

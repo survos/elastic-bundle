@@ -39,6 +39,7 @@ final class ElasticIndexService
         private readonly ElasticSpooler $spooler,
         private readonly ElasticIndexInspector $inspector,
         private readonly ElasticIndexNameResolver $nameResolver,
+        private readonly AnalysisBuilder $analysis,
         private readonly ?string $indexPattern = null,
         private readonly ?MessageBusInterface $bus = null,
     ) {}
@@ -179,12 +180,14 @@ final class ElasticIndexService
     {
         $concrete = $this->nameResolver->concreteFor($this->nameResolver->uid($search));
 
-        $mappings = ['properties' => $parameters['mappings'] ?? []];
+        // Analysis is a static setting -- it can only be attached here, at creation. That is the
+        // reason changing the language requires a rebuild rather than an update.
+        $mappings = ['properties' => $this->analysis->applyTo($parameters['mappings'] ?? [])];
         if ($strict) {
             $mappings['dynamic'] = 'strict';
         }
 
-        $client->createIndex($concrete, $mappings);
+        $client->createIndex($concrete, $mappings, $this->analysis->settings());
 
         return $concrete;
     }

@@ -7,6 +7,7 @@ namespace Survos\ElasticBundle;
 use Survos\ElasticBundle\Controller\ElasticAdminController;
 use Survos\ElasticBundle\EventListener\ElasticSpoolDoctrineListener;
 use Survos\ElasticBundle\Menu\ElasticMenuSubscriber;
+use Survos\ElasticBundle\Service\AnalysisBuilder;
 use Survos\ElasticBundle\Service\ElasticIndexInspector;
 use Survos\Kit\Traits\HasConfigurableRoutes;
 use Survos\TablerBundle\Event\MenuEvent;
@@ -55,6 +56,20 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                     ->defaultValue(500)
                     ->info('Ids per message. One huge flush becomes several bounded jobs.')
                 ->end()
+                ->arrayNode('analysis')
+                    ->addDefaultsIfNotSet()
+                    ->info('Text analysis. Without it every text field uses the "standard" analyzer, which does no stemming and no accent folding -- searches work but are markedly worse, and any comparison against Meilisearch is unfair. index.analysis is a STATIC setting, so changing this needs elastic:index:rebuild.')
+                    ->children()
+                        ->scalarNode('language')
+                            ->defaultNull()
+                            ->info('Elasticsearch stemmer language: english, hungarian, spanish, german, french, ... Null leaves the default analyzer in place.')
+                        ->end()
+                        ->booleanNode('ascii_folding')
+                            ->defaultTrue()
+                            ->info('Fold accents so "Kovacs" matches "Kovács". Applies only when a language is set.')
+                        ->end()
+                    ->end()
+                ->end()
                 ->scalarNode('index_pattern')
                     ->defaultNull()
                     ->info('Which cluster indices the admin page considers this app\'s, e.g. "kpa_*". The cluster index namespace is flat and shared by every app pointed at the node, so this is how the page finds indices this app owns but never declared -- a leftover from a rename, a locale variant. Defaults to survos_search.index_prefix + "*", so it tracks exactly what this app writes; set it only to widen or narrow that deliberately.')
@@ -89,6 +104,9 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
             ->arg('$spoolDir', $config['spool_dir'])
             ->public();
 
+        $services->set(AnalysisBuilder::class)
+            ->arg('$language', $config['analysis']['language'])
+            ->arg('$asciiFolding', $config['analysis']['ascii_folding']);
         $services->set(ElasticIndexInspector::class);
         $services->set(ElasticIndexService::class)
             ->arg('$indexPattern', $config['index_pattern'])
