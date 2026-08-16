@@ -50,7 +50,15 @@ final class ElasticIndexService
         ?string $code = null,
         #[Option('Drop the index first')]
         bool $drop = false,
+        #[Option('Reject documents carrying fields the mapping never declared; --no-strict lets Elasticsearch infer them instead')]
+        ?bool $strict = null,
     ): int {
+        // Nullable so --strict/--no-strict are both expressible; default on. An inferred field is
+        // written into the mapping permanently and its type can never be changed afterwards, so
+        // silently accepting one is worse than refusing the document. Mapping fields up front is
+        // cheap now that DTOs and the object mapper do the work.
+        $strict ??= true;
+
         foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
             $index = $this->nameResolver->uid($search);
             if ($drop && $client->indexExists($index)) {
@@ -61,8 +69,21 @@ final class ElasticIndexService
                 $io->text(sprintf('%s already exists', $index));
                 continue;
             }
-            $client->createIndex($index, $parameters['mappings'] ?? []);
-            $io->success(sprintf('%s: created %s with %d mapped fields', $descriptor->code, $index, count($parameters['mappings'] ?? [])));
+
+            $properties = $parameters['mappings'] ?? [];
+            $mappings = ['properties' => $properties];
+            if ($strict) {
+                $mappings['dynamic'] = 'strict';
+            }
+
+            $client->createIndex($index, $mappings);
+            $io->success(sprintf(
+                '%s: created %s with %d mapped fields (dynamic: %s)',
+                $descriptor->code,
+                $index,
+                count($properties),
+                $strict ? 'strict' : 'true',
+            ));
         }
 
         return Command::SUCCESS;

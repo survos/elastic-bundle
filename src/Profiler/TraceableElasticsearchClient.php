@@ -28,10 +28,16 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         return $this->record('search', $index, $body, fn (): array => $this->inner->search($index, $body));
     }
 
-    public function createIndex(string $index, array $mappings): void
+    public function createIndex(string $index, array $mappings, array $settings = []): void
     {
-        $this->record('createIndex', $index, ['mapped_fields' => count($mappings)], function () use ($index, $mappings): array {
-            $this->inner->createIndex($index, $mappings);
+        $recorded = [
+            'mapped_fields' => count($mappings['properties'] ?? []),
+            'dynamic' => $mappings['dynamic'] ?? '(unset)',
+            'settings' => array_keys($settings),
+        ];
+
+        $this->record('createIndex', $index, $recorded, function () use ($index, $mappings, $settings): array {
+            $this->inner->createIndex($index, $mappings, $settings);
 
             return [];
         });
