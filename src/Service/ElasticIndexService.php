@@ -233,6 +233,16 @@ final class ElasticIndexService
                 $concretes = $client->indexExists($alias) ? [$alias] : [];
             }
 
+            // Generations left behind by `rebuild --keep-old` have no alias pointing at them, so
+            // resolving through the alias alone can never reach them -- they would leak with no
+            // command able to remove them. Sweep anything named after this alias too.
+            foreach ($client->listIndices($alias.'_*') as $row) {
+                if ($this->nameResolver->isGenerationOf($row['index'], $alias) && !\in_array($row['index'], $concretes, true)) {
+                    $concretes[] = $row['index'];
+                }
+            }
+            sort($concretes);
+
             if ([] === $concretes) {
                 $io->text(\sprintf('%s: %s does not exist', $descriptor->code, $alias));
                 continue;
