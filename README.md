@@ -19,13 +19,90 @@ and its mappings live in ES-specific YAML instead of deriving from `#[Field]` me
 ## Commands
 
 ```bash
-bin/console elastic:index:create   [code] [--drop]
-bin/console elastic:index:populate [code] [--batch-size=250] [--limit=N]
 bin/console elastic:index:status   [code]
+bin/console elastic:index:create   [code] [--drop] [--strict|--no-strict]
+bin/console elastic:index:populate [code] [--batch-size=250] [--limit=N]
+bin/console elastic:index:rebuild  [code] [--keep-old] [--batch-size=250]
+bin/console elastic:index:delete   [code] [--force]
 ```
 
 Mappings are **not** computed here — they come from the search's resolved adapter parameters
 in search-bundle, so querying and indexing can't drift apart.
+
+## Demo: a faceted, stemmed search in five minutes
+
+Reproduced end to end against `survos-sites/bench` (Elasticsearch 9.5.0, 300 films). Every
+number below is from that run.
+
+```yaml
+# config/packages/survos_search.yaml
+survos_search:
+    default_adapter: es
+    adapters:
+        es: { dsn: '%env(ELASTICSEARCH_DSN)%' }
+
+# config/packages/survos_elastic.yaml
+survos_elastic:
+    analysis:
+        language: english
+        ascii_folding: true
+```
+
+```bash
+bin/console elastic:index:create app_movie     # bench_movie -> bench_movie_20260816113526
+bin/console elastic:index:populate app_movie   # indexed 300 documents
+```
+
+Then open `/entity/app_movie/search`. The page is served by search-bundle's ux-search
+components against the Elasticsearch adapter — 300 results, a Year range slider whose 1986–2023
+bounds come from a live `stats` aggregation, and term facets (`mcu`, `superhero`, `marvel`, …)
+from `terms` aggregations.
+
+**Stemming is the part worth demonstrating**, because it is invisible until you look for it:
+
+| query | results |
+|---|---|
+| `?query=village` | 2 |
+| `?query=villages` | 2 |
+| `?query=war` | 13 |
+
+Singular and plural returning the same hits is the `english` stemmer. Without
+`survos_elastic.analysis` those numbers are 0 and 2 — the default `standard` analyzer does no
+stemming at all. On the same index you can see both behaviours side by side:
+
+```bash
+curl "$ES/bench_movie/_analyze" -H 'Content-Type: application/json' \
+  -d '{"analyzer":"standard","text":"Running through Kovács'"'"' villages"}'
+#   -> running, through, kovács, villages
+
+curl "$ES/bench_movie/_analyze" -H 'Content-Type: application/json' \
+  -d '{"analyzer":"survos_text","text":"Running through Kovács'"'"' villages"}'
+#   -> run, through, kovac, villag
+```
+
+### Changing the analyzer
+
+`index.analysis` is a **static** setting — editing the config does nothing to an index that
+already exists. The admin page says so rather than letting you wonder:
+
+> Configured for "hungarian" but this index was built with "english". `index.analysis` is a
+> static setting, so the configuration has had no effect on it — run `elastic:index:rebuild`.
+
+```bash
+bin/console elastic:index:rebuild app_movie
+```
+
+builds a new generation, populates it, swaps the alias atomically, and drops the old one. The
+old index serves every query until the moment of the swap, and a failure mid-populate leaves the
+live alias untouched.
+
+### Admin pages
+
+`/admin/elastic/` lists every registered search with its index, document source and schema
+status; `/admin/elastic/{code}` is the diagnostic page — alias, analyzers, dynamic mapping,
+declared-vs-actual drift, field count, deep-paging headroom, and a **Field intent** table tracing
+each `#[Field]` through the adapter into the live mapping. That last one answers "why isn't my
+facet showing up" without guessing which of the three layers dropped it.
 
 ## Doctrine sync
 
@@ -75,6 +152,11 @@ framework:
 
 ## Not built yet
 
-- Settings/analyzer management and schema validation.
 - The embedding cache. Vectors stay off until it exists — see search-bundle's
   `docs/elasticsearch.md`.
+- Streaming/resumable populate, conditional indexing, relation traversal in auto-mapping, a raw
+  request-body hook, `search_after` deep paging and suggesters — see
+  [survos/mono#42](https://github.com/survos/mono/issues/42) items 3–8.
+
+Settings/analyzer management and schema validation are **done** — see the demo above and the
+admin pages.
