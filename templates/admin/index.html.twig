@@ -1,0 +1,80 @@
+{# Prefer the app's own base; fall back to Tabler's when the bundle is used standalone. #}
+{% extends ['base.html.twig', '@SurvosTabler/layout/base.html.twig'] %}
+
+{% block title %}Elasticsearch Indexes{% endblock %}
+
+{% block body %}
+    <div class="container-xl py-3">
+        <div class="page-header d-print-none mb-3">
+            <h2 class="page-title">Elasticsearch Indexes</h2>
+            <div class="text-secondary mt-1">
+                Read live from Elasticsearch — nothing here is stored or synced.
+            </div>
+        </div>
+
+        {% if reports is empty %}
+            <div class="alert alert-info">
+                No Elasticsearch-backed searches are registered.
+            </div>
+        {% else %}
+            <div class="card">
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                        <thead>
+                            <tr>
+                                <th>Search</th>
+                                <th>Entity</th>
+                                <th>Index</th>
+                                <th class="text-end">Documents</th>
+                                <th class="text-end">Fields</th>
+                                <th>Aliases</th>
+                                <th>Schema</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for report in reports %}
+                                <tr>
+                                    <td>
+                                        <a href="{{ path('survos_elastic_admin_show', {code: report.code}) }}">{{ report.code }}</a>
+                                    </td>
+                                    <td class="text-secondary">{{ report.shortClass ?? '—' }}</td>
+                                    <td><code>{{ report.index }}</code></td>
+                                    <td class="text-end">
+                                        {% if report.exists %}
+                                            {{ report.documentCount|number_format }}
+                                        {% else %}
+                                            <span class="badge bg-secondary-lt">not created</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="text-end">{{ report.actualFields|length }}</td>
+                                    <td>
+                                        {% if report.aliases is not empty %}
+                                            {% for alias in report.aliases %}<code>{{ alias }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+                                        {% else %}
+                                            <span class="text-secondary">none</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if report.warningCount > 0 %}
+                                            <span class="badge bg-yellow-lt">{{ report.warningCount }} to review</span>
+                                        {% elseif report.exists %}
+                                            <span class="badge bg-green-lt">clean</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary-lt">—</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <p class="text-secondary mt-3 mb-0">
+                Document browsing, raw queries, shards and snapshots live in Elasticvue and Kibana —
+                see the Elastic menu. These pages only cover what those tools cannot know: whether the
+                index matches what this application declared.
+            </p>
+        {% endif %}
+    </div>
+{% endblock %}

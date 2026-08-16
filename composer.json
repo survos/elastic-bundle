@@ -11,18 +11,21 @@
         "symfony/console": "^8.1",
         "symfony/dependency-injection": "^8.1",
         "symfony/framework-bundle": "^8.1",
-        "psr/log": "^3.0"
+        "psr/log": "^3.0",
+        "symfony/routing": "^8.1"
     },
     "suggest": {
         "doctrine/orm": "For the postFlush spool listener that records changed entity ids.",
         "survos/jsonl-bundle": "For JSONL spool files (shared with survos/meili-bundle's spooler).",
-        "symfony/messenger": "To flush the spool asynchronously instead of via elastic:spool:flush."
+        "symfony/messenger": "To flush the spool asynchronously instead of via elastic:spool:flush.",
+        "survos/tabler-bundle": "For the Elastic dropdown in the admin navbar and the Tabler-styled index/schema pages."
     },
     "require-dev": {
         "doctrine/orm": "^3.4",
         "survos/jsonl-bundle": "^2.6",
         "phpunit/phpunit": "^13.0",
-        "phpstan/phpstan": "^2.1"
+        "phpstan/phpstan": "^2.1",
+        "survos/tabler-bundle": "^2.24"
     },
     "autoload": {
         "psr-4": {

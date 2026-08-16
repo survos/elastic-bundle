@@ -1,0 +1,129 @@
+{% extends ['base.html.twig', '@SurvosTabler/layout/base.html.twig'] %}
+
+{% block title %}{{ report.code }} — Elasticsearch{% endblock %}
+
+{% block body %}
+    <div class="container-xl py-3">
+        <div class="page-header d-print-none mb-3">
+            <div class="row align-items-center">
+                <div class="col">
+                    <div class="page-pretitle">
+                        <a href="{{ path('survos_elastic_admin_index') }}">Elasticsearch Indexes</a>
+                    </div>
+                    <h2 class="page-title">{{ report.code }}</h2>
+                    <div class="text-secondary mt-1">
+                        <code>{{ report.index }}</code>
+                        {% if report.entityClass %}
+                            · {{ report.entityClass }}
+                            {% if ideLink %}
+                                <a href="{{ ideLink }}" class="ms-1" title="Open in IDE">open in IDE</a>
+                            {% endif %}
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        {% if not report.exists %}
+            <div class="alert alert-warning">
+                This index does not exist yet. Run <code>bin/console elastic:index:create {{ report.code }}</code>.
+            </div>
+        {% else %}
+            <div class="row row-cards mb-3">
+                {% for label, value in {
+                    'Documents': report.documentCount|number_format,
+                    'Store size': (report.storeSizeBytes / 1024 / 1024)|round(1) ~ ' MB',
+                    'Mapped fields': report.actualFields|length,
+                    'Shards / replicas': report.shards,
+                } %}
+                    <div class="col-6 col-md-3">
+                        <div class="card card-sm">
+                            <div class="card-body">
+                                <div class="text-secondary">{{ label }}</div>
+                                <div class="h2 mb-0">{{ value }}</div>
+                            </div>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+
+            {# The point of the page: each row is a gap that is otherwise silent. #}
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h3 class="card-title">Schema &amp; configuration</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                        <tbody>
+                            {% for check in report.checks %}
+                                <tr>
+                                    <td style="width: 1%"><span class="badge bg-{{ check.color }}-lt">{{ check.status }}</span></td>
+                                    <td style="width: 12rem"><strong>{{ check.label }}</strong></td>
+                                    <td>
+                                        {{ check.detail }}
+                                        {% if check.issueUrl %}
+                                            <a href="{{ check.issueUrl }}" target="_blank" rel="noopener" class="text-secondary ms-1">(mono#42, item {{ check.issue }})</a>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card mb-3">
+                <div class="card-header">
+                    <h3 class="card-title">Declared vs actual mapping</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-vcenter card-table">
+                        <thead>
+                            <tr><th>Field</th><th>Declared</th><th>In Elasticsearch</th><th></th></tr>
+                        </thead>
+                        <tbody>
+                            {% for row in report.fieldComparison %}
+                                <tr>
+                                    <td><code>{{ row.field }}</code></td>
+                                    <td>{{ row.declared ?? '—' }}</td>
+                                    <td>{{ row.actual ?? '—' }}</td>
+                                    <td style="width: 1%">
+                                        {% if row.status == 'ok' %}
+                                            <span class="badge bg-green-lt">ok</span>
+                                        {% elseif row.status == 'missing' %}
+                                            <span class="badge bg-yellow-lt" title="Declared by the app but absent from Elasticsearch">not indexed</span>
+                                        {% elseif row.status == 'undeclared' %}
+                                            <span class="badge bg-yellow-lt" title="Added by dynamic mapping from indexed documents">undeclared</span>
+                                        {% else %}
+                                            <span class="badge bg-red-lt" title="A mapped type cannot be changed in place — this needs a reindex">type mismatch</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3 class="card-title">Index settings</h3>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-vcenter card-table">
+                        <tbody>
+                            {% for key, value in report.settings %}
+                                <tr>
+                                    <td style="width: 22rem"><code>{{ key }}</code></td>
+                                    <td>{{ value is iterable ? value|json_encode : value }}</td>
+                                </tr>
+                            {% else %}
+                                <tr><td class="text-secondary">No settings reported.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+{% endblock %}

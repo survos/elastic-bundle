@@ -78,6 +78,37 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         return $this->inner->ping();
     }
 
+    // Introspection calls are recorded too: the admin page's whole job is comparing what the app
+    // declared against what Elasticsearch holds, and "which call actually ran" is the first
+    // question when those two disagree.
+
+    public function getMapping(string $index): array
+    {
+        return $this->record('getMapping', $index, [], fn (): array => $this->inner->getMapping($index));
+    }
+
+    public function getSettings(string $index): array
+    {
+        return $this->record('getSettings', $index, [], fn (): array => $this->inner->getSettings($index));
+    }
+
+    public function getAliases(string $index): array
+    {
+        $aliases = [];
+        $this->record('getAliases', $index, [], function () use ($index, &$aliases): array {
+            $aliases = $this->inner->getAliases($index);
+
+            return ['aliases' => $aliases];
+        });
+
+        return $aliases;
+    }
+
+    public function getStats(string $index): array
+    {
+        return $this->record('getStats', $index, [], fn (): array => $this->inner->getStats($index));
+    }
+
     /**
      * @param array<string, mixed> $body
      * @param callable(): array<string, mixed> $run

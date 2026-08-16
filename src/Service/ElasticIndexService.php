@@ -6,6 +6,7 @@ namespace Survos\ElasticBundle\Service;
 
 use Doctrine\Persistence\ManagerRegistry;
 use Survos\ElasticBundle\Message\ReindexDocuments;
+use Survos\ElasticBundle\Model\IndexReport;
 use Survos\ElasticBundle\Spool\ElasticSpooler;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Survos\SearchBundle\Adapter\AdapterProvider;
@@ -34,6 +35,7 @@ final class ElasticIndexService
         private readonly AdapterProvider $adapterProvider,
         private readonly ManagerRegistry $managerRegistry,
         private readonly ElasticSpooler $spooler,
+        private readonly ElasticIndexInspector $inspector,
         private readonly ?MessageBusInterface $bus = null,
     ) {}
 
@@ -273,23 +275,76 @@ final class ElasticIndexService
     }
 
     /**
-     * @return \Generator<int, array{0: object, 1: ElasticsearchClientInterface, 2: array<string, mixed>}>
+     * Live schema report for every Elasticsearch-backed search — the admin index page.
+     *
+     * @return list<IndexReport>
      */
-    private function resolve(SymfonyStyle $io, ?string $code): \Generator
+    public function reports(): array
     {
-        $descriptors = $code === null
+        $reports = [];
+        foreach ($this->searches(null) as [$descriptor, $client, $parameters]) {
+            $reports[] = $this->inspect($descriptor, $client, $parameters);
+        }
+
+        return $reports;
+    }
+
+    /** Live schema report for one search, or null when it isn't registered or isn't ES-backed. */
+    public function report(string $code): ?IndexReport
+    {
+        foreach ($this->searches($code) as [$descriptor, $client, $parameters]) {
+            return $this->inspect($descriptor, $client, $parameters);
+        }
+
+        return null;
+    }
+
+    /** @param array<string, mixed> $parameters */
+    private function inspect(object $descriptor, ElasticsearchClientInterface $client, array $parameters): IndexReport
+    {
+        return $this->inspector->inspect(
+            code: $descriptor->code,
+            class: $descriptor->class ?? null,
+            index: $this->indexName($descriptor->code, $parameters),
+            client: $client,
+            parameters: $parameters,
+        );
+    }
+
+    /** @return list<object> */
+    private function descriptors(?string $code): array
+    {
+        return $code === null
             ? $this->registry->all()
             : array_values(array_filter(
                 $this->registry->all(),
                 static fn ($d): bool => $d->code === $code || $d->name === $code,
             ));
+    }
 
-        if ($descriptors === []) {
+    /**
+     * @return \Generator<int, array{0: object, 1: ElasticsearchClientInterface, 2: array<string, mixed>}>
+     */
+    private function resolve(SymfonyStyle $io, ?string $code): \Generator
+    {
+        if ($this->descriptors($code) === []) {
             $io->warning($code === null ? 'No searches are registered.' : sprintf('No search registered for "%s".', $code));
+
             return;
         }
 
-        foreach ($descriptors as $descriptor) {
+        yield from $this->searches($code);
+    }
+
+    /**
+     * The same resolution as resolve(), without a console to complain to — the controllers need it
+     * too, and an admin page must not depend on SymfonyStyle.
+     *
+     * @return \Generator<int, array{0: object, 1: ElasticsearchClientInterface, 2: array<string, mixed>}>
+     */
+    private function searches(?string $code): \Generator
+    {
+        foreach ($this->descriptors($code) as $descriptor) {
             $search = $this->searchProvider->getSearch($descriptor->name)->create([
                 'hitTemplate' => $descriptor->hitTemplate,
             ]);

@@ -4,7 +4,12 @@ declare(strict_types=1);
 
 namespace Survos\ElasticBundle;
 
+use Survos\ElasticBundle\Controller\ElasticAdminController;
 use Survos\ElasticBundle\EventListener\ElasticSpoolDoctrineListener;
+use Survos\ElasticBundle\Menu\ElasticMenuSubscriber;
+use Survos\ElasticBundle\Service\ElasticIndexInspector;
+use Survos\Kit\Traits\HasConfigurableRoutes;
+use Survos\TablerBundle\Event\MenuEvent;
 use Survos\ElasticBundle\MessageHandler\ReindexDocumentsHandler;
 use Survos\ElasticBundle\MessageHandler\RemoveDocumentsHandler;
 use Survos\ElasticBundle\Profiler\ElasticCallRecorder;
@@ -28,6 +33,8 @@ use Symfony\Component\Messenger\MessageBusInterface;
 #[RequiredBundle(SurvosSearchBundle::class)]
 final class SurvosElasticBundle extends AbstractSurvosBundle
 {
+    use HasConfigurableRoutes;
+
     public function configure(DefinitionConfigurator $definition): void
     {
         $definition->rootNode()
@@ -48,12 +55,29 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                     ->defaultValue(500)
                     ->info('Ids per message. One huge flush becomes several bounded jobs.')
                 ->end()
+                ->scalarNode('elasticvue_url')
+                    ->defaultNull()
+                    ->info('Elasticvue (https://elasticvue.com) — the closest equivalent to the riccox Meilisearch UI. Point this at a self-hosted instance (docker run -p 8080:8080 cars10/elasticvue) or https://app.elasticvue.com. Null hides the menu link. Note that Elasticvue talks to Elasticsearch from the browser, so the node needs http.cors.enabled unless it is proxied.')
+                ->end()
+                ->scalarNode('kibana_url')
+                    ->defaultNull()
+                    ->info('Kibana, if one is running. Null hides the menu link.')
+                ->end()
+                ->scalarNode('server_url')
+                    ->defaultNull()
+                    ->info('The Elasticsearch node itself, for a direct link in the admin menu. Null hides it.')
+                ->end()
             ->end();
+
+        $this->addRouteOptions($definition->rootNode()->children(), '/admin/elastic');
     }
 
     public function loadExtension(array $config, ContainerConfigurator $container, ContainerBuilder $builder): void
     {
         parent::loadExtension($config, $container, $builder);
+
+        $this->captureRouteConfig($config);
+        $this->registerRouteLoader($builder);
 
         $services = $container->services()->defaults()->autowire()->autoconfigure();
 
@@ -61,7 +85,18 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
             ->arg('$spoolDir', $config['spool_dir'])
             ->public();
 
+        $services->set(ElasticIndexInspector::class);
         $services->set(ElasticIndexService::class)->public();
+        $services->set(ElasticAdminController::class)->tag('controller.service_arguments');
+
+        // Menu subscribers are deliberately not auto-scanned (see AbstractSurvosBundle), so this
+        // has to be explicit. It self-disables when no Elasticsearch-backed search is registered.
+        if (class_exists(MenuEvent::class)) {
+            $services->set(ElasticMenuSubscriber::class)
+                ->arg('$kibanaUrl', $config['kibana_url'])
+                ->arg('$elasticvueUrl', $config['elasticvue_url'])
+                ->arg('$serverUrl', $config['server_url']);
+        }
 
         // Messenger handlers. This bundle registers services explicitly rather than by
         // directory resource, so #[AsMessageHandler] alone would never be seen.
