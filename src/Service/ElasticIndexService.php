@@ -205,8 +205,9 @@ final class ElasticIndexService
         foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
             $index = $this->nameResolver->uid($search);
             if (!$client->indexExists($index)) {
-                $io->warning(sprintf('%s: index "%s" does not exist -- run elastic:index:create first.', $descriptor->code, $index));
-                continue;
+                $concrete = $this->createGeneration($client, $search, $parameters, true);
+                $client->updateAliases([['add' => ['index' => $concrete, 'alias' => $index]]]);
+                $io->text(sprintf('Created %s with the declared mapping.', $index));
             }
 
             $count = $this->bulkIndex($client, $index, $this->documents($descriptor->class, $parameters, $limit), max(1, $batchSize));
@@ -328,31 +329,19 @@ final class ElasticIndexService
         }
 
         foreach ($classes as $entityClass) {
-            $ids = $this->spooler->pendingIds($entityClass);
-            if ($ids === []) {
-                continue;
-            }
-
-            $batches = 0;
-            $indexed = 0;
-            foreach (array_chunk($ids, max(1, $batchSize)) as $chunk) {
-                ++$batches;
-                if ($async) {
-                    if ($this->bus === null) {
-                        throw new \RuntimeException('--async needs symfony/messenger installed and a bus available.');
+            $this->spooler->drain($entityClass, function (array $ids) use ($async, $batchSize, $entityClass, $io): void {
+                foreach (array_chunk($ids, max(1, $batchSize)) as $chunk) {
+                    if ($async) {
+                        if ($this->bus === null) {
+                            throw new \RuntimeException('--async needs symfony/messenger and a bus.');
+                        }
+                        $this->bus->dispatch(new ReindexDocuments($entityClass, $chunk));
+                    } else {
+                        $this->indexIds($entityClass, $chunk);
                     }
-                    $this->bus->dispatch(new ReindexDocuments($entityClass, $chunk));
-                    continue;
                 }
-                $indexed += $this->indexIds($entityClass, $chunk);
-            }
-
-            // Only clear once the work is safely handed off, so a crash mid-drain replays
-            // rather than silently losing ids.
-            $this->spooler->clear($entityClass);
-            $io->success($async
-                ? sprintf('%s: dispatched %d ids in %d batches', $entityClass, count($ids), $batches)
-                : sprintf('%s: reconciled %d of %d spooled ids', $entityClass, $indexed, count($ids)));
+                $io->success(sprintf('%s: reconciled/dispatched %d ids', $entityClass, count($ids)));
+            });
         }
 
         return Command::SUCCESS;
@@ -385,8 +374,18 @@ final class ElasticIndexService
             return 0;
         }
 
+        if (!$client->indexExists($this->nameResolver->uid($search))) {
+            throw new \RuntimeException('Index is missing. Run elastic:index:populate '.$descriptor->code.' before draining updates.');
+        }
+
         $entities = $manager->getRepository($class)->findBy([$this->identifierField($manager, $class) => $ids]);
         $parameters['documentProvider'] = $entities;
+
+        $foundIds = array_map(fn (object $entity): string => (string) $manager->getClassMetadata($class)->getIdentifierValues($entity)[$this->identifierField($manager, $class)], $entities);
+        $missingIds = array_values(array_diff(array_map(strval(...), $ids), $foundIds));
+        if ($missingIds !== []) {
+            $this->deleteIds($class, $missingIds);
+        }
 
         return $this->bulkIndex(
             $client,
@@ -416,6 +415,9 @@ final class ElasticIndexService
         [$descriptor, $client, $parameters, $search] = $resolved;
 
         $index = $this->nameResolver->uid($search);
+        if (!$client->indexExists($index)) {
+            return 0;
+        }
         $body = [];
         foreach ($ids as $id) {
             $body[] = ['delete' => ['_index' => $index, '_id' => (string) $id]];
@@ -457,7 +459,7 @@ final class ElasticIndexService
             $adapter = $this->adapterProvider->getAdapter($search->getAdapterName());
             $client = $this->clientOf($adapter);
             if ($client === null) {
-                return null;
+                continue;
             }
 
             $resolver = new OptionsResolver();
@@ -779,6 +781,7 @@ final class ElasticIndexService
         if (is_callable($provider)) {
             $provider = $provider();
         }
+        $manager = null;
         if (!is_iterable($provider)) {
             $manager = $this->managerRegistry->getManagerForClass($class)
                 ?? throw new \LogicException(sprintf('No documentProvider configured and no Doctrine manager for %s.', $class));
@@ -806,6 +809,9 @@ final class ElasticIndexService
 
             yield ['id' => (string) $id, 'document' => $document];
             ++$count;
+            if ($manager !== null && is_object($source)) {
+                $manager->detach($source);
+            }
         }
     }
 
@@ -814,6 +820,7 @@ final class ElasticIndexService
      */
     public function bulkIndex(ElasticsearchClientInterface $client, string $index, iterable $documents, int $batchSize): int
     {
+        $batchSize = max(1, $batchSize);
         $body = [];
         $count = 0;
         foreach ($documents as $item) {

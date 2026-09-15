@@ -19,11 +19,12 @@ final readonly class RemoveDocumentsHandler
 
     public function __invoke(RemoveDocuments $message): void
     {
-        $count = $this->indexService->deleteIds($message->entityClass, $message->ids);
+        $count = $this->indexService->indexIds($message->entityClass, $message->ids);
 
-        $this->logger?->info('Removed documents', [
+        $this->logger?->info('Reconciled removed document ids', [
             'class' => $message->entityClass,
-            'removed' => $count,
+            'indexed' => $count,
+            'requested' => count($message->ids),
         ]);
     }
 }

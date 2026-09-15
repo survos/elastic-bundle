@@ -49,7 +49,7 @@ final class ElasticIndexServiceTest extends TestCase
     public function testBulkSurfacesPerDocumentErrors(): void
     {
         $client = $this->createMock(ElasticsearchClientInterface::class);
-        $client->method('bulk')->willReturn([
+        $client->expects(self::once())->method('bulk')->willReturn([
             'errors' => true,
             'items' => [[
                 'index' => [

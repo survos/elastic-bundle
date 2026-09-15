@@ -134,7 +134,7 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
         if (class_exists(\Doctrine\Bundle\DoctrineBundle\Attribute\AsDoctrineListener::class)) {
             $services->set(ElasticSpoolDoctrineListener::class)
                 ->arg('$enabled', $config['spool_enabled'])
-                ->arg('$async', $config['async'] && interface_exists(MessageBusInterface::class))
+                ->arg('$async', interface_exists(MessageBusInterface::class) ? $config['async'] : false)
                 ->arg('$batchSize', $config['batch_size']);
         }
 

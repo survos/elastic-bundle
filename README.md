@@ -160,3 +160,37 @@ framework:
 
 Settings/analyzer management and schema validation are **done** — see the demo above and the
 admin pages.
+
+## SearchBench lifecycle validation (September 2026)
+
+SearchBench's `es` branch now evaluates the full lexical browser UI using InstantSearch and
+client-side Twig, with 9,751 movies, 5,076 cars, 1,807 Marvel characters and 17,092 WCMA records.
+See [the browser contract](../search-bundle/docs/instantsearch.md) and the app's
+[setup and live tests](https://github.com/survos-sites/bench/blob/es/docs/elasticsearch.md).
+
+`elastic:index:populate` now creates a missing index with the declared mapping before loading
+records. `rebuild` fills a new generation before swapping the alias; pause writes or replay
+changes during that operation. Incremental indexing refuses a missing index rather than letting
+Elasticsearch auto-create an incompatible mapping. Bulk item failures are surfaced.
+
+The Doctrine listener selects Elasticsearch-backed entities, captures generated identifiers
+before removal, and dispatches reconciliation IDs after flush. Reconciliation loads current DB
+state: present rows are indexed, absent rows deleted. Both old remove messages and new index
+messages follow this rule so a delayed delete does not blindly remove a replacement record.
+
+Use a dedicated Messenger queue/consumer. Sharing the ORM database connection with the Doctrine
+transport keeps queue inserts inside an explicit outer transaction until commit. A process crash
+between a standalone flush commit and dispatch is not covered by a transactional outbox. DQL/SQL
+bulk writes bypass ORM events and need explicit reindexing. Concurrent consumers do not guarantee
+version ordering; one indexing consumer per dataset is the evaluated configuration.
+
+With `async: false` (or no bus), IDs are spooled for `elastic:spool:flush`. Queue dispatch failures
+also fall back to the spool. Schedule drains/monitor queue failures in deployed applications.
+A drain claims the current file under a lock, retains failed claims for retry, and leaves new
+appends for a subsequent drain. This requires a persistent shared spool volume if multiple
+application processes need to drain the same files. JSONL, filesystem, finder and lock are now
+explicit runtime dependencies.
+
+Unit tests cover generated-ID capture, cleared units of work, failed queue dispatch, failed spool
+claims, concurrent appends, and bulk errors. SearchBench additionally tests population, Doctrine
+CRUD, replacement identifiers and rollback reconciliation against a local ES node.

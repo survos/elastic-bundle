@@ -5,47 +5,33 @@ declare(strict_types=1);
 namespace Survos\ElasticBundle\EventListener;
 
 use Doctrine\Bundle\DoctrineBundle\Attribute\AsDoctrineListener;
+use Doctrine\ORM\Event\OnClearEventArgs;
 use Doctrine\ORM\Event\PostFlushEventArgs;
 use Doctrine\ORM\Event\PostPersistEventArgs;
-use Doctrine\ORM\Event\PostRemoveEventArgs;
+use Doctrine\ORM\Event\PreRemoveEventArgs;
 use Doctrine\ORM\Event\PostUpdateEventArgs;
 use Doctrine\ORM\Events;
 use Psr\Log\LoggerInterface;
 use Survos\ElasticBundle\Message\ReindexDocuments;
-use Survos\ElasticBundle\Message\RemoveDocuments;
+use Survos\ElasticBundle\Service\ElasticIndexService;
 use Survos\ElasticBundle\Spool\ElasticSpooler;
 use Survos\SearchBundle\Registry\UxSearchRegistry;
 use Symfony\Component\Messenger\MessageBusInterface;
+use Symfony\Contracts\Service\ResetInterface;
 
-/**
- * Records which entities changed, and hands them off. Never touches Elasticsearch inline.
- *
- * Mirrors meili-bundle's MeiliSpoolDoctrineListener. Ids are collected during
- * persist/update/remove and dispatched (or spooled) in postFlush, in batches. A database write
- * must not depend on the search engine being up, and an HTTP request must not wait on it.
- *
- * Two outputs, by design:
- *
- *  - Messenger, when a bus is available and async is on. Ids are chunked so one enormous flush
- *    becomes several bounded jobs rather than a single message a worker chokes on.
- *  - A JSONL spool otherwise, drained later by elastic:spool:flush. This is the right mode for
- *    a bulk import: writing a line per id costs nothing, and reconciling 400k ids once at the
- *    end beats dispatching 400k messages.
- */
+/** Collect identifiers, then reconcile current database state outside the write request. */
 #[AsDoctrineListener(Events::postPersist)]
 #[AsDoctrineListener(Events::postUpdate)]
-#[AsDoctrineListener(Events::postRemove)]
+#[AsDoctrineListener(Events::preRemove)]
 #[AsDoctrineListener(Events::postFlush)]
-final class ElasticSpoolDoctrineListener
+#[AsDoctrineListener(Events::onClear)]
+final class ElasticSpoolDoctrineListener implements ResetInterface
 {
-    /** @var array<class-string, array<string, bool>> */
+    /** @var array<int, array<class-string, array<string, true>>> */
     private array $pendingIds = [];
 
-    /** @var array<class-string, array<string, bool>> */
-    private array $removedIds = [];
-
-    /** @var array<class-string, true>|null */
-    private ?array $searchableClasses = null;
+    /** @var array<class-string, bool> */
+    private array $searchableClasses = [];
 
     public function __construct(
         private readonly ElasticSpooler $spooler,
@@ -55,122 +41,64 @@ final class ElasticSpoolDoctrineListener
         private readonly bool $enabled = true,
         private readonly bool $async = true,
         private readonly int $batchSize = 500,
+        private readonly ?ElasticIndexService $indexService = null,
     ) {}
 
-    public function postPersist(PostPersistEventArgs $args): void
+    public function postPersist(PostPersistEventArgs $args): void { $this->collect($args); }
+    public function postUpdate(PostUpdateEventArgs $args): void { $this->collect($args); }
+
+    // Doctrine clears generated identifiers before postRemove; capture them beforehand.
+    public function preRemove(PreRemoveEventArgs $args): void { $this->collect($args); }
+
+    public function onClear(OnClearEventArgs $args): void
     {
-        $this->collect($args, $this->pendingIds);
+        unset($this->pendingIds[spl_object_id($args->getObjectManager())]);
     }
 
-    public function postUpdate(PostUpdateEventArgs $args): void
-    {
-        $this->collect($args, $this->pendingIds);
-    }
-
-    public function postRemove(PostRemoveEventArgs $args): void
-    {
-        // postRemove still has the identifier in memory; after postFlush it is gone.
-        $this->collect($args, $this->removedIds);
-    }
+    public function reset(): void { $this->pendingIds = []; }
 
     public function postFlush(PostFlushEventArgs $args): void
     {
-        if (!$this->enabled) {
-            return;
-        }
-
-        $pending = $this->pendingIds;
-        $removed = $this->removedIds;
-        // Reset BEFORE dispatching: a handler running synchronously (sync transport, or
-        // messenger configured without async) can trigger another flush, and re-entering this
-        // method with the buffers still full would dispatch the same ids again, forever.
-        $this->pendingIds = [];
-        $this->removedIds = [];
-
-        foreach ($removed as $class => $map) {
-            $this->emit($class, array_keys($map), true);
-        }
+        $managerId = spl_object_id($args->getObjectManager());
+        $pending = $this->pendingIds[$managerId] ?? [];
+        unset($this->pendingIds[$managerId]);
         foreach ($pending as $class => $map) {
-            // Anything deleted in the same flush must not also be reindexed.
-            $ids = array_keys(array_diff_key($map, $removed[$class] ?? []));
-            $this->emit($class, $ids, false);
-        }
-    }
-
-    /** @param list<string> $ids */
-    private function emit(string $class, array $ids, bool $removal): void
-    {
-        if ($ids === []) {
-            return;
-        }
-
-        if ($this->bus === null || !$this->async) {
-            if (!$removal) {
+            $ids = array_map(strval(...), array_keys($map));
+            if ($this->bus === null || !$this->async) {
                 $this->spooler->appendIds($class, $ids);
+                continue;
             }
-            // Deletions cannot wait for a batch drain -- the row is already gone, so a spool
-            // entry would be indistinguishable from a stale id. Fall through and let the
-            // reconcile step notice, rather than silently dropping it.
-            $this->logger?->debug('Elastic spooled ids', ['class' => $class, 'count' => count($ids), 'removal' => $removal]);
-
-            return;
+            try {
+                foreach (array_chunk($ids, max(1, $this->batchSize)) as $chunk) {
+                    // Deletes use the same reconciliation: absent rows are removed. A stale
+                    // delete job cannot remove a row subsequently recreated with the same id.
+                    $this->bus->dispatch(new ReindexDocuments($class, $chunk));
+                }
+            } catch (\Throwable $error) {
+                // A queue outage must not silently lose a change after the database committed.
+                $this->spooler->appendIds($class, $ids);
+                $this->logger?->error('Elastic dispatch failed; reconciliation retained in spool.', ['exception' => $error]);
+            }
         }
-
-        foreach (array_chunk($ids, max(1, $this->batchSize)) as $chunk) {
-            $this->bus->dispatch($removal
-                ? new RemoveDocuments($class, $chunk)
-                : new ReindexDocuments($class, $chunk));
-        }
-
-        $this->logger?->debug('Elastic dispatched', [
-            'class' => $class,
-            'count' => count($ids),
-            'batches' => (int) ceil(count($ids) / max(1, $this->batchSize)),
-            'removal' => $removal,
-        ]);
     }
 
-    /**
-     * Only entities that actually back a search are worth spooling.
-     *
-     * Without this the listener reacts to every flush, including the ProcessedMessage rows
-     * zenstruck/messenger-monitor writes for each handled message -- so handling a
-     * ReindexDocuments produced a ProcessedMessage, whose flush dispatched another
-     * ReindexDocuments, and the worker fed itself forever.
-     */
-    private function isSearchable(string $class): bool
+    private function collect(PostPersistEventArgs|PostUpdateEventArgs|PreRemoveEventArgs $args): void
     {
-        $this->searchableClasses ??= array_fill_keys(
-            array_filter(array_map(static fn ($d) => $d->class, $this->registry->all())),
-            true,
-        );
-
-        return isset($this->searchableClasses[$class]);
-    }
-
-    /** @param array<class-string, array<string, bool>> $bucket */
-    private function collect(
-        PostPersistEventArgs|PostUpdateEventArgs|PostRemoveEventArgs $args,
-        array &$bucket,
-    ): void {
-        if (!$this->enabled) {
-            return;
+        if (!$this->enabled) { return; }
+        $manager = $args->getObjectManager();
+        $metadata = $manager->getClassMetadata($args->getObject()::class);
+        $class = $metadata->getName(); // resolves Doctrine proxy subclasses
+        if (!array_key_exists($class, $this->searchableClasses)) {
+            $this->searchableClasses[$class] = $this->indexService !== null
+                ? $this->indexService->forEntityClass($class) !== null
+                : $this->registry->forClass($class) !== null;
         }
-
-        $object = $args->getObject();
-        if (!$this->isSearchable($object::class)) {
-            return;
-        }
-
-        $metadata = $args->getObjectManager()->getClassMetadata($object::class);
-        $identifiers = $metadata->getIdentifierValues($object);
-        if (count($identifiers) !== 1) {
-            return; // composite keys have no single _id to map onto
-        }
-
+        if (!$this->searchableClasses[$class]) { return; }
+        $identifiers = $metadata->getIdentifierValues($args->getObject());
+        if (count($identifiers) !== 1) { return; }
         $id = reset($identifiers);
         if ($id !== null) {
-            $bucket[$object::class][(string) $id] = true;
+            $this->pendingIds[spl_object_id($manager)][$class][(string) $id] = true;
         }
     }
 }
