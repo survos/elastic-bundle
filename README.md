@@ -4,6 +4,9 @@ Elasticsearch **index lifecycle** for Symfony. The query and faceted-UI half liv
 [survos/search-bundle](https://github.com/survos/search-bundle); this bundle owns everything
 that writes.
 
+Moving an app off Meilisearch? See [Migrating from Meilisearch](docs/migrating-from-meilisearch.md):
+the decision, the app checklist, and the fsn1 production setup.
+
 ## Why it's separate
 
 `survos/search-bundle` adapters are read-only, and it must not require an engine client — an
