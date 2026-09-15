@@ -139,6 +139,33 @@ ids once at the end beats dispatching 400k messages.
 bin/console elastic:spool:flush [FQCN] [--batch-size=500] [--async]
 ```
 
+### Write path under load
+
+A workflow flushes once per transition, so a busy pipeline produces a stream of small
+`ReindexDocuments` messages. The write path is built for that:
+
+- **The handler batches.** `ReindexDocumentsHandler` is a Messenger `BatchHandlerInterface`:
+  it collects `handler_batch_size` messages (default 50), merges their ids per class, and
+  reconciles them with one query and one bulk request. A partial batch goes out after
+  `handler_idle_timeout` seconds of worker idleness (default 1).
+- **Incremental writes are upserts.** Reconciliation sends `update` + `doc_as_upsert`, so
+  Elasticsearch's `detect_noop` skips documents whose indexed fields didn't change, such as a
+  transition that only touches unindexed columns. Mapped fields missing from a document are
+  sent as null, so a merge can't keep a stale value.
+- **No forced refresh on incremental writes or deletes.** Each forced refresh creates a segment.
+  `refresh_interval` (1s) makes changes searchable. `elastic:index:populate` refreshes once at
+  the end.
+- **Rebuilds load with refresh off.** `elastic:index:rebuild` sets `refresh_interval: -1` on the new
+  generation, restores the default, refreshes once, then swaps the alias.
+- **Bulk requests are sized by bytes** as well as count (`ElasticIndexService::MAX_BULK_BYTES`,
+  10 MB), because OCR and AI output make document size vary by orders of magnitude.
+
+```yaml
+survos_elastic:
+    handler_batch_size: 50
+    handler_idle_timeout: 1
+```
+
 ### Routing
 
 Unrouted messages are handled **synchronously** -- which still works, but the flush then waits

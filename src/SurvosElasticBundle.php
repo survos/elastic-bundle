@@ -16,6 +16,7 @@ use Survos\ElasticBundle\MessageHandler\RemoveDocumentsHandler;
 use Survos\ElasticBundle\Profiler\ElasticCallRecorder;
 use Survos\ElasticBundle\Profiler\ElasticDataCollector;
 use Survos\ElasticBundle\Profiler\TracingClientDecorator;
+use Survos\ElasticBundle\Service\DocumentReconcilerInterface;
 use Survos\ElasticBundle\Service\ElasticIndexService;
 use Survos\ElasticBundle\Spool\ElasticSpooler;
 use Survos\Kit\AbstractSurvosBundle;
@@ -55,6 +56,14 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                 ->integerNode('batch_size')
                     ->defaultValue(500)
                     ->info('Ids per message. One huge flush becomes several bounded jobs.')
+                ->end()
+                ->integerNode('handler_batch_size')
+                    ->defaultValue(50)
+                    ->info('ReindexDocuments messages the worker collects before reconciling them in one query and bulk request per class.')
+                ->end()
+                ->integerNode('handler_idle_timeout')
+                    ->defaultValue(1)
+                    ->info('Seconds of worker idleness after which a partial batch is reconciled. 0 waits for a full batch.')
                 ->end()
                 ->arrayNode('analysis')
                     ->addDefaultsIfNotSet()
@@ -111,6 +120,7 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
         $services->set(ElasticIndexService::class)
             ->arg('$indexPattern', $config['index_pattern'])
             ->public();
+        $services->alias(DocumentReconcilerInterface::class, ElasticIndexService::class);
         $services->set(ElasticAdminController::class)->tag('controller.service_arguments');
 
         // Menu subscribers are deliberately not auto-scanned (see AbstractSurvosBundle), so this
@@ -127,7 +137,10 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
         // Messenger handlers. This bundle registers services explicitly rather than by
         // directory resource, so #[AsMessageHandler] alone would never be seen.
         if (interface_exists(MessageBusInterface::class)) {
-            $services->set(ReindexDocumentsHandler::class);
+            $services->set(ReindexDocumentsHandler::class)
+                ->arg('$batchSize', $config['handler_batch_size'])
+                ->arg('$idleTimeout', $config['handler_idle_timeout'])
+                ->arg('$idsPerRequest', $config['batch_size']);
             $services->set(RemoveDocumentsHandler::class);
         }
 

@@ -79,6 +79,15 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         });
     }
 
+    public function putSettings(string $index, array $settings): void
+    {
+        $this->record('putSettings', $index, $settings, function () use ($index, $settings): array {
+            $this->inner->putSettings($index, $settings);
+
+            return [];
+        });
+    }
+
     public function ping(): bool
     {
         return $this->inner->ping();

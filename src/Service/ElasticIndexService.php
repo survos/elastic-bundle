@@ -29,8 +29,11 @@ use Symfony\Component\OptionsResolver\OptionsResolver;
  * parameters in survos/search-bundle, so querying and indexing can't drift apart. This
  * service only creates, fills, and reports on the index.
  */
-final class ElasticIndexService
+final class ElasticIndexService implements DocumentReconcilerInterface
 {
+    /** Elastic recommends bulk requests of a few megabytes; start around 5–15 MB and measure. */
+    public const int MAX_BULK_BYTES = 10 * 1024 * 1024;
+
     public function __construct(
         private readonly UxSearchRegistry $registry,
         private readonly SearchProvider $searchProvider,
@@ -139,7 +142,12 @@ final class ElasticIndexService
             $io->text(sprintf('building %s', $concrete));
 
             try {
-                $count = $this->bulkIndex($client, $concrete, $this->documents($descriptor->class, $parameters, null), max(1, $batchSize));
+                // Nothing queries a generation before the alias moves, so skip periodic refreshes
+                // while it loads, then restore the default and make everything searchable once.
+                $client->putSettings($concrete, ['index' => ['refresh_interval' => '-1']]);
+                $count = $this->bulkIndex($client, $concrete, $this->withMappedNulls($this->documents($descriptor->class, $parameters, null), array_keys($parameters['mappings'] ?? [])), max(1, $batchSize));
+                $client->putSettings($concrete, ['index' => ['refresh_interval' => null]]);
+                $client->refresh($concrete);
             } catch (\Throwable $e) {
                 // Leave the alias where it is and clean up the half-built generation.
                 $client->deleteIndex($concrete);
@@ -210,7 +218,7 @@ final class ElasticIndexService
                 $io->text(sprintf('Created %s with the declared mapping.', $index));
             }
 
-            $count = $this->bulkIndex($client, $index, $this->documents($descriptor->class, $parameters, $limit), max(1, $batchSize));
+            $count = $this->bulkIndex($client, $index, $this->withMappedNulls($this->documents($descriptor->class, $parameters, $limit), array_keys($parameters['mappings'] ?? [])), max(1, $batchSize), refresh: true);
             $io->success(sprintf('%s: indexed %d documents into %s', $descriptor->code, $count, $index));
         }
 
@@ -390,9 +398,29 @@ final class ElasticIndexService
         return $this->bulkIndex(
             $client,
             $this->nameResolver->uid($search),
-            $this->documents($class, $parameters, null),
+            $this->withMappedNulls($this->documents($class, $parameters, null), array_keys($parameters['mappings'] ?? [])),
             max(1, count($entities)),
+            upsert: true,
         );
+    }
+
+    /**
+     * An update merges into the stored document, so a field the new document leaves out would
+     * keep its old value. Send every mapped top-level field, null when absent. Rebuild and populate
+     * do the same, so a reconcile right after a rebuild produces an identical source and
+     * detect_noop can skip it.
+     *
+     * @param iterable<array{id: string, document: array<string, mixed>}> $documents
+     * @param list<string> $fields
+     * @return \Generator<int, array{id: string, document: array<string, mixed>}>
+     */
+    private function withMappedNulls(iterable $documents, array $fields): \Generator
+    {
+        $blank = array_fill_keys($fields, null);
+        foreach ($documents as $item) {
+            $item['document'] += $blank;
+            yield $item;
+        }
     }
 
     /**
@@ -424,7 +452,6 @@ final class ElasticIndexService
         }
 
         $response = $client->bulk($body);
-        $client->refresh($index);
 
         // A delete for an id that was never indexed comes back as result=not_found, which is
         // fine and must not be treated as an error -- the spool is intentionally over-inclusive.
@@ -818,23 +845,49 @@ final class ElasticIndexService
     /**
      * @param iterable<array{id: string, document: array<string, mixed>}> $documents
      */
-    public function bulkIndex(ElasticsearchClientInterface $client, string $index, iterable $documents, int $batchSize): int
-    {
+    public function bulkIndex(
+        ElasticsearchClientInterface $client,
+        string $index,
+        iterable $documents,
+        int $batchSize,
+        bool $refresh = false,
+        int $maxBytes = self::MAX_BULK_BYTES,
+        bool $upsert = false,
+    ): int {
         $batchSize = max(1, $batchSize);
         $body = [];
+        $bytes = 0;
+        $pending = 0;
         $count = 0;
         foreach ($documents as $item) {
-            $body[] = ['index' => ['_index' => $index, '_id' => $item['id']]];
-            $body[] = $item['document'];
-            if ((++$count % $batchSize) === 0) {
+            if ($upsert) {
+                // detect_noop (on by default for updates) skips the write when nothing changed,
+                // which is most of a workflow's marking-only flushes.
+                $action = ['update' => ['_index' => $index, '_id' => $item['id']]];
+                $source = ['doc' => $item['document'], 'doc_as_upsert' => true];
+            } else {
+                $action = ['index' => ['_index' => $index, '_id' => $item['id']]];
+                $source = $item['document'];
+            }
+            $body[] = $action;
+            $body[] = $source;
+            $bytes += strlen((string) json_encode($source)) + 64;
+            ++$count;
+            // Elastic sizes bulk requests by bytes (a few MB), not documents: OCR text and AI
+            // output make document size vary by orders of magnitude.
+            if (++$pending >= $batchSize || $bytes >= $maxBytes) {
                 $this->flush($client, $body);
                 $body = [];
+                $bytes = 0;
+                $pending = 0;
             }
         }
         if ($body !== []) {
             $this->flush($client, $body);
         }
-        if ($count > 0) {
+        // Incremental writes never force a refresh: each one creates a segment, and a stream of
+        // them is how a busy worker overwhelms the node. refresh_interval (1s) covers visibility.
+        if ($refresh && $count > 0) {
             $client->refresh($index);
         }
 
@@ -850,11 +903,12 @@ final class ElasticIndexService
         }
 
         foreach ($response['items'] ?? [] as $item) {
-            $error = $item['index']['error'] ?? null;
+            $result = is_array($item) ? (reset($item) ?: []) : [];
+            $error = $result['error'] ?? null;
             if ($error !== null) {
                 throw new \RuntimeException(sprintf(
                     'Elasticsearch rejected document "%s": %s',
-                    $item['index']['_id'] ?? '?',
+                    $result['_id'] ?? '?',
                     json_encode($error, JSON_UNESCAPED_SLASHES),
                 ));
             }
