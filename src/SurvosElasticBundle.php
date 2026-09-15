@@ -80,7 +80,7 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                 ->end()
                 ->scalarNode('kibana_url')
                     ->defaultNull()
-                    ->info('Kibana, if one is running. Null hides the menu link.')
+                    ->info('Browser-facing Kibana base URL (including any space/base path). In debug, null defaults to localhost:5601 only when all ES connections are loopback; otherwise the link is hidden.')
                 ->end()
                 ->scalarNode('server_url')
                     ->defaultNull()
@@ -119,7 +119,9 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
             $services->set(ElasticMenuSubscriber::class)
                 ->arg('$kibanaUrl', $config['kibana_url'])
                 ->arg('$elasticvueUrl', $config['elasticvue_url'])
-                ->arg('$serverUrl', $config['server_url']);
+                ->arg('$serverUrl', $config['server_url'])
+                ->arg('$adapters', '%survos_search.adapters%')
+                ->arg('$debug', '%kernel.debug%');
         }
 
         // Messenger handlers. This bundle registers services explicitly rather than by

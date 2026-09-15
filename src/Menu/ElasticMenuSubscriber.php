@@ -40,6 +40,8 @@ final class ElasticMenuSubscriber
         protected readonly ?RouterInterface $router = null,
         protected readonly ?RouteAliasService $routeAliasService = null,
         protected readonly ?IconService $iconService = null,
+        private readonly array $adapters = [],
+        private readonly bool $debug = false,
     ) {
     }
 
@@ -56,6 +58,11 @@ final class ElasticMenuSubscriber
 
         $submenu = $this->addSubmenu($event->getMenu(), 'Elastic', 'tabler:search');
 
+        $endpoints = ElasticMenuLinks::endpoints($this->adapters);
+        foreach ($endpoints as $name => $endpoint) {
+            $this->addHeading($submenu, $name.': '.$endpoint, 'tabler:server');
+        }
+
         // No warning badge here on purpose. It would need the full inspection above, and the
         // count lives one click away on the page it describes.
         $this->add($submenu, 'survos_elastic_admin_index', label: 'Indexes', icon: 'tabler:list-check');
@@ -66,12 +73,15 @@ final class ElasticMenuSubscriber
             ? $this->add($submenu, uri: $this->elasticvueUrl, label: 'Elasticvue', icon: 'tabler:eye', external: true, dividerBefore: true)
             : $this->add($submenu, uri: self::ELASTICVUE_EXTENSION, label: 'Elasticvue (install)', icon: 'tabler:eye', external: true, dividerBefore: true);
 
-        if ($this->kibanaUrl) {
-            $this->add($submenu, uri: $this->kibanaUrl, label: 'Kibana', icon: 'tabler:chart-line', external: true);
+        $kibana = ElasticMenuLinks::kibana($this->kibanaUrl, $endpoints, $this->debug);
+        if ($kibana) {
+            $this->add($submenu, uri: $kibana, label: 'Kibana', icon: 'tabler:chart-line', external: true);
+            $this->add($submenu, uri: $kibana.'/app/management/data/index_management/indices', label: 'Index management', icon: 'tabler:database', external: true);
+            $this->add($submenu, uri: $kibana.'/app/dev_tools#/console', label: 'Dev Tools / tasks', icon: 'tabler:terminal', external: true);
         }
 
-        if ($this->serverUrl) {
-            $this->add($submenu, uri: $this->serverUrl, label: 'ES Server', icon: 'tabler:server', external: true);
+        if ($server = ElasticMenuLinks::safeUrl($this->serverUrl)) {
+            $this->add($submenu, uri: $server, label: 'ES Server', icon: 'tabler:server', external: true);
         }
     }
 }

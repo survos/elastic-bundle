@@ -194,3 +194,28 @@ explicit runtime dependencies.
 Unit tests cover generated-ID capture, cleared units of work, failed queue dispatch, failed spool
 claims, concurrent appends, and bulk errors. SearchBench additionally tests population, Doctrine
 CRUD, replacement identifiers and rollback reconciliation against a local ES node.
+
+## Admin navbar and local/hosted Elasticsearch
+
+With Tabler and an Elasticsearch-backed search, the Elastic dropdown in
+`ADMIN_NAVBAR_MENU` shows the configured ES endpoints (without credentials),
+app indexes, Kibana, Kibana index management, and Dev Tools. In Dev Tools,
+`GET _tasks?detailed=true` shows running Elasticsearch tasks; these are distinct
+from application Messenger jobs. Menu rendering never makes cluster requests.
+
+In debug mode, loopback-only ES connections default to `http://localhost:5601`.
+For a hosted cluster, container hostname, SSH tunnel, or Kibana space, configure
+the browser-facing URL explicitly; it is independent of the ES DSN:
+
+```yaml
+survos_elastic:
+    kibana_url: '%env(KIBANA_URL)%'
+```
+
+Set `KIBANA_URL` in the app environment (for example `http://localhost:5602`
+for a tunnel). Set `kibana_url: ''` to hide Kibana links. Changing this URL does
+not switch the search backend: configure the SearchBundle adapter DSN separately.
+Use separate per-app index prefixes when sharing a server. A remote authenticated
+node also needs correct TLS trust and credentials in the app's connection setup.
+SearchBundle alone keeps its engine-neutral Search menu; ES administration belongs
+in ElasticBundle, like the Meilisearch tools belong in MeiliBundle.
