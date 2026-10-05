@@ -249,3 +249,19 @@ Use separate per-app index prefixes when sharing a server. A remote authenticate
 node also needs correct TLS trust and credentials in the app's connection setup.
 SearchBundle alone keeps its engine-neutral Search menu; ES administration belongs
 in ElasticBundle, like the Meilisearch tools belong in MeiliBundle.
+
+## Symfony profiler
+
+In debug mode, the Elasticsearch toolbar and profiler panel show calls, query bodies,
+round-trip and Elasticsearch timings, hit counts, aggregations and errors. The toolbar
+uses Symfony's built-in search icon and turns amber for empty or repeated searches.
+
+Repeated searches are counted beyond the first identical query on the same client and
+index; each matching row shows the total occurrence count. Bulk and other write calls
+are excluded because their recorded payloads are summaries, not complete requests.
+
+**Copy as cURL** replays a search against its configured HTTP endpoint. Commands use
+POSIX shell quoting and omit connection credentials; supply authentication and any
+custom CA configuration yourself. The button uses Symfony's profiler clipboard support.
+It is available with the SearchBundle factory's endpoint-aware client; older versions
+or custom clients without endpoint metadata still show query bodies and timings.

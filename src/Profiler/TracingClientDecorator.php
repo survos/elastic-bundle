@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Survos\ElasticBundle\Profiler;
 
+use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClient;
 use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientDecoratorInterface;
 use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientInterface;
 use Symfony\Component\Stopwatch\Stopwatch;
@@ -18,6 +19,11 @@ final readonly class TracingClientDecorator implements ElasticsearchClientDecora
 
     public function decorate(ElasticsearchClientInterface $client): ElasticsearchClientInterface
     {
-        return new TraceableElasticsearchClient($client, $this->recorder, $this->stopwatch);
+        return new TraceableElasticsearchClient(
+            $client,
+            $this->recorder,
+            $this->stopwatch,
+            $client instanceof ElasticsearchClient && method_exists($client, 'getEndpoint') ? $client->getEndpoint() : null,
+        );
     }
 }

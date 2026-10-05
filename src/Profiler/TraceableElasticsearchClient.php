@@ -21,6 +21,7 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         private ElasticsearchClientInterface $inner,
         private ElasticCallRecorder $recorder,
         private ?Stopwatch $stopwatch = null,
+        private ?string $endpoint = null,
     ) {}
 
     public function search(string $index, array $body): array
@@ -194,6 +195,8 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
             $event?->stop();
             $this->recorder->add([
                 'operation' => $operation,
+                'connection' => spl_object_id($this),
+                'endpoint' => $this->endpoint,
                 'index' => $index,
                 'body' => $body,
                 'duration' => (microtime(true) - $start) * 1000,
