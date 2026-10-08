@@ -23,10 +23,11 @@ and its mappings live in ES-specific YAML instead of deriving from `#[Field]` me
 
 ```bash
 bin/console elastic:index:status   [code]
-bin/console elastic:index:create   [code] [--drop] [--strict|--no-strict]
+bin/console elastic:index:create   [code] [--drop] [--strict|--no-strict] [--triggers|--no-triggers]
 bin/console elastic:index:populate [code] [--batch-size=250] [--limit=N]
 bin/console elastic:index:rebuild  [code] [--keep-old] [--batch-size=250]
 bin/console elastic:index:delete   [code] [--force]
+bin/console elastic:outbox:consume [--once] [--dispatch] [--batch-size=500] [--idle-timeout=5] [--time-limit=N]
 ```
 
 Mappings are **not** computed here — they come from the search's resolved adapter parameters
@@ -179,6 +180,30 @@ framework:
             'Survos\ElasticBundle\Message\ReindexDocuments': async
             'Survos\ElasticBundle\Message\RemoveDocuments': async
 ```
+
+### Postgres trigger outbox (trial)
+
+The listener only sees writes that go through the ORM. On Postgres, triggers can capture every
+write instead -- raw SQL, DQL bulk updates, `ON DELETE CASCADE`, psql -- in the same transaction,
+so a crash after `COMMIT` cannot lose a change. See [survos/mono#63](https://github.com/survos/mono/issues/63).
+
+```bash
+bin/console elastic:index:create app_package --triggers     # create elastic_outbox + install triggers (idempotent)
+bin/console elastic:outbox:consume                          # long-running: LISTEN, drain, reindex
+bin/console elastic:index:create app_package --no-triggers  # remove them again
+```
+
+- Statement-level triggers record `(class, id)` in `elastic_outbox`, one row per id however
+  often it changed, and `NOTIFY` on commit, so the consumer wakes in well under a second.
+- The consumer claims a batch, reconciles it with `indexIds()` (or `--dispatch` sends
+  `ReindexDocuments` to the bus), then deletes it. A failed batch stays queued; a write landing
+  on a claimed id is queued again rather than lost.
+- `elastic:index:status` shows which searches have triggers and how deep the outbox is.
+- The table is created by the command, not a migration; a `doctrine.dbal.schema_filter` hides it
+  from `doctrine:migrations:diff`.
+- Not Postgres (SQLite, MySQL)? `--triggers` says so, and the listener keeps handling changes.
+- The listener is unaffected. Running both is safe -- reindexing is idempotent and `detect_noop`
+  skips the duplicate write -- which is how the trial compares them.
 
 ## Not built yet
 

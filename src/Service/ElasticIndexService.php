@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace Survos\ElasticBundle\Service;
 
+use Doctrine\DBAL\Connection;
+use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Survos\ElasticBundle\Message\ReindexDocuments;
 use Survos\ElasticBundle\Model\IndexReport;
+use Survos\ElasticBundle\Outbox\ElasticOutbox;
 use Survos\ElasticBundle\Spool\ElasticSpooler;
 use Symfony\Component\Messenger\MessageBusInterface;
 use Survos\SearchBundle\Adapter\AdapterProvider;
@@ -45,6 +48,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         private readonly AnalysisBuilder $analysis,
         private readonly ?string $indexPattern = null,
         private readonly ?MessageBusInterface $bus = null,
+        private readonly ?ElasticOutbox $outbox = null,
     ) {}
 
     #[AsCommand('elastic:index:create', 'Create the Elasticsearch index and mapping for a search')]
@@ -56,6 +60,8 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         bool $drop = false,
         #[Option('Reject documents carrying fields the mapping never declared; --no-strict lets Elasticsearch infer them instead')]
         ?bool $strict = null,
+        #[Option('Install Postgres triggers that queue changed ids in elastic_outbox for elastic:outbox:consume; --no-triggers removes them. Omit to leave them as they are.')]
+        ?bool $triggers = null,
     ): int {
         // Nullable so --strict/--no-strict are both expressible; default on. An inferred field is
         // written into the mapping permanently and its type can never be changed afterwards, so
@@ -65,6 +71,11 @@ final class ElasticIndexService implements DocumentReconcilerInterface
 
         foreach ($this->resolve($io, $code) as [$descriptor, $client, $parameters, $search]) {
             $alias = $this->nameResolver->uid($search);
+
+            // Before the index checks below, which may skip to the next search.
+            if ($triggers !== null) {
+                $this->applyTriggers($io, $descriptor->code, $descriptor->class, $triggers);
+            }
 
             // An index literally named the alias predates alias support. Elasticsearch will not
             // let an alias and an index share a name, so this cannot be migrated in place.
@@ -309,12 +320,21 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $index = $this->nameResolver->uid($search);
             $exists = $client->indexExists($index);
             $docs = $exists ? ($client->search($index, ['size' => 0, 'track_total_hits' => true])['hits']['total']['value'] ?? 0) : 0;
-            $rows[] = [$descriptor->code, $index, $exists ? 'yes' : 'no', $docs, count($parameters['mappings'] ?? [])];
+            $target = $this->outboxTarget($descriptor->class);
+            $triggers = $target === null ? 'n/a' : ($this->outbox->isInstalled($target[0], $descriptor->class) ? 'yes' : 'no');
+            $rows[] = [$descriptor->code, $index, $exists ? 'yes' : 'no', $docs, count($parameters['mappings'] ?? []), $triggers];
         }
 
         $rows === []
             ? $io->warning('No Elasticsearch-backed searches are registered.')
-            : $io->table(['search', 'index', 'exists', 'documents', 'mapped fields'], $rows);
+            : $io->table(['search', 'index', 'exists', 'documents', 'mapped fields', 'triggers'], $rows);
+
+        foreach ($this->outboxConnections() as $connection) {
+            $stats = $this->outbox->stats($connection);
+            if ($stats !== null) {
+                $io->text(sprintf('elastic_outbox: %d pending (%d claimed), oldest %s', $stats['pending'], $stats['claimed'], $stats['oldest'] ?? '—'));
+            }
+        }
 
         return Command::SUCCESS;
     }
@@ -350,6 +370,74 @@ final class ElasticIndexService implements DocumentReconcilerInterface
                 }
                 $io->success(sprintf('%s: reconciled/dispatched %d ids', $entityClass, count($ids)));
             });
+        }
+
+        return Command::SUCCESS;
+    }
+
+    #[AsCommand('elastic:outbox:consume', 'Reconcile the ids the Postgres triggers queued in elastic_outbox')]
+    public function outboxConsumeCommand(
+        SymfonyStyle $io,
+        #[Option('Ids claimed per batch')]
+        int $batchSize = 500,
+        #[Option('Dispatch ReindexDocuments through Messenger instead of indexing inline')]
+        bool $dispatch = false,
+        #[Option('Drain what is pending, then exit')]
+        bool $once = false,
+        #[Option('Seconds to wait for a trigger notification before checking the table anyway')]
+        int $idleTimeout = 5,
+        #[Option('Exit after this many seconds')]
+        ?int $timeLimit = null,
+    ): int {
+        if ($dispatch && $this->bus === null) {
+            $io->error('--dispatch needs symfony/messenger and a bus.');
+
+            return Command::FAILURE;
+        }
+        $connections = $this->outboxConnections();
+        if ($connections === []) {
+            $io->warning('No Elasticsearch-backed search is stored in Postgres; nothing can feed elastic_outbox.');
+
+            return Command::SUCCESS;
+        }
+        foreach ($connections as $connection) {
+            $this->outbox->listen($connection);
+        }
+
+        $deadline = $timeLimit !== null ? time() + $timeLimit : null;
+        $consume = function (string $class, array $ids) use ($dispatch, $io): void {
+            if ($dispatch) {
+                $this->bus->dispatch(new ReindexDocuments($class, $ids));
+            } else {
+                $this->indexIds($class, $ids);
+                // A long-running worker must not reuse hydrated entities: findBy() would hand
+                // back the identity-map copies, so a second change to the same row is indexed stale.
+                $this->managerRegistry->getManagerForClass($class)?->clear();
+            }
+            $io->text(sprintf('%s %s: %d ids', date('H:i:s'), $class, count($ids)));
+        };
+
+        while ($deadline === null || time() < $deadline) {
+            $drained = 0;
+            foreach ($connections as $connection) {
+                try {
+                    $drained += $this->outbox->drain($connection, $batchSize, $consume);
+                } catch (\Throwable $error) {
+                    // The claim was released, so the ids stay queued; back off rather than spin.
+                    $io->error($error->getMessage());
+                    if ($once) {
+                        return Command::FAILURE;
+                    }
+                    sleep(max(1, $idleTimeout));
+                }
+            }
+            if ($drained > 0) {
+                continue;
+            }
+            if ($once) {
+                break;
+            }
+            $this->outbox->wait($connections[0], $deadline === null ? $idleTimeout : max(0, min($idleTimeout, $deadline - time())));
         }
 
         return Command::SUCCESS;
@@ -498,6 +586,61 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         }
 
         return null;
+    }
+
+    private function applyTriggers(SymfonyStyle $io, string $code, string $class, bool $install): void
+    {
+        $target = $this->outboxTarget($class);
+        if ($target === null) {
+            $io->note(sprintf('%s: triggers need Doctrine on Postgres; changes keep flowing through the postFlush listener.', $code));
+
+            return;
+        }
+        [$connection, $table, $idColumn] = $target;
+        if ($install) {
+            $this->outbox->install($connection, $class, $table, $idColumn);
+            $io->text(sprintf('%s: triggers installed on %s', $code, $table));
+        } else {
+            $this->outbox->uninstall($connection, $class, $table);
+            $io->text(sprintf('%s: triggers removed from %s', $code, $table));
+        }
+    }
+
+    /**
+     * @param class-string $class
+     * @return array{0: Connection, 1: string, 2: string}|null connection, quoted table, id column
+     */
+    private function outboxTarget(string $class): ?array
+    {
+        $manager = $this->outbox !== null ? $this->managerRegistry->getManagerForClass($class) : null;
+        if (!$manager instanceof EntityManagerInterface || !ElasticOutbox::supports($manager->getConnection())) {
+            return null;
+        }
+        $metadata = $manager->getClassMetadata($class);
+        if (count($metadata->getIdentifierFieldNames()) !== 1) {
+            return null; // composite keys are skipped by the listener too
+        }
+        $connection = $manager->getConnection();
+        $table = $manager->getConfiguration()->getQuoteStrategy()->getTableName($metadata, $connection->getDatabasePlatform());
+
+        return [$connection, $table, $metadata->getSingleIdentifierColumnName()];
+    }
+
+    /** @return list<Connection> distinct Postgres connections holding Elasticsearch-backed entities */
+    private function outboxConnections(): array
+    {
+        $connections = [];
+        foreach ($this->registry->all() as $descriptor) {
+            if ($this->forEntityClass($descriptor->class) === null) {
+                continue;
+            }
+            $target = $this->outboxTarget($descriptor->class);
+            if ($target !== null) {
+                $connections[spl_object_id($target[0])] = $target[0];
+            }
+        }
+
+        return array_values($connections);
     }
 
     /** @param class-string $class */

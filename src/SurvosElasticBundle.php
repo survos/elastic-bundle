@@ -7,6 +7,8 @@ namespace Survos\ElasticBundle;
 use Survos\ElasticBundle\Controller\ElasticAdminController;
 use Survos\ElasticBundle\EventListener\ElasticSpoolDoctrineListener;
 use Survos\ElasticBundle\Menu\ElasticMenuSubscriber;
+use Survos\ElasticBundle\Outbox\ElasticOutbox;
+use Survos\ElasticBundle\Outbox\OutboxSchemaFilter;
 use Survos\ElasticBundle\Service\AnalysisBuilder;
 use Survos\ElasticBundle\Service\ElasticIndexInspector;
 use Survos\Kit\Traits\HasConfigurableRoutes;
@@ -151,6 +153,13 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
                 ->arg('$enabled', $config['spool_enabled'])
                 ->arg('$async', interface_exists(MessageBusInterface::class) ? $config['async'] : false)
                 ->arg('$batchSize', $config['batch_size']);
+        }
+
+        // Postgres trigger outbox (elastic:index:create --triggers, elastic:outbox:consume). The
+        // schema filter keeps Doctrine's migrations from dropping a table they did not create.
+        if (interface_exists(\Doctrine\ORM\EntityManagerInterface::class)) {
+            $services->set(ElasticOutbox::class);
+            $services->set(OutboxSchemaFilter::class)->tag('doctrine.dbal.schema_filter');
         }
 
         // Profiler integration, debug only. The traceable client is the only way Elasticsearch
