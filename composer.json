@@ -24,7 +24,7 @@
         "survos/tabler-bundle": "For the Elastic dropdown in the admin navbar and the Tabler-styled index/schema pages."
     },
     "require-dev": {
-        "doctrine/orm": "^3.4",
+        "doctrine/orm": "^3.7",
         "survos/jsonl-bundle": "^2.6",
         "phpunit/phpunit": "^13.0",
         "phpstan/phpstan": "^2.1",
