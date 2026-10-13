@@ -577,6 +577,9 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $resolver = new OptionsResolver();
             $adapter->configureParameters($resolver);
             $parameters = $resolver->resolve($search->getAdapterParameters());
+            if ($parameters['sharedIndex'] ?? false) {
+                continue;
+            }
             $search->setResolvedAdapterParameters($parameters);
 
             return [$descriptor, $client, $parameters, $search];
@@ -907,6 +910,9 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $resolver = new OptionsResolver();
             $adapter->configureParameters($resolver);
             $parameters = $resolver->resolve($search->getAdapterParameters());
+            if ($parameters['sharedIndex'] ?? false) {
+                continue; // another app writes it (e.g. folio_item); this bundle must never create, fill or drop it
+            }
             // The query path resolves parameters onto the search itself; this CLI/admin path
             // resolved them into a local array only, so ElasticIndexNameResolver saw no `index`
             // parameter and fell back to the entity FQCN -- a different index from the one queries
