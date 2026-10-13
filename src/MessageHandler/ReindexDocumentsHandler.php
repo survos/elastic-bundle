@@ -32,7 +32,8 @@ final class ReindexDocumentsHandler implements BatchHandlerInterface
         private readonly int $batchSize = 50,
         private readonly int $idleTimeout = 1,
         private readonly int $idsPerRequest = 500,
-    ) {}
+    ) {
+    }
 
     public function __invoke(ReindexDocuments $message, ?Acknowledger $ack = null): mixed
     {

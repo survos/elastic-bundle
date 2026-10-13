@@ -211,5 +211,4 @@ final class ElasticIndexInspectorTest extends TestCase
     {
         return array_column(array_map(static fn (SchemaCheck $c): array => ['id' => $c->id, 'check' => $c], $checks), 'check', 'id');
     }
-
 }

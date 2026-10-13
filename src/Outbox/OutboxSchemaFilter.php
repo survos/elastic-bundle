@@ -18,6 +18,6 @@ final class OutboxSchemaFilter
         $name = $asset instanceof AbstractAsset ? $asset->getName() : $asset;
         $parts = explode('.', $name); // schema-qualified on some platforms
 
-        return trim(end($parts), '"') !== ElasticOutbox::TABLE;
+        return ElasticOutbox::TABLE !== trim(end($parts), '"');
     }
 }

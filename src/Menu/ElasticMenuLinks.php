@@ -30,7 +30,7 @@ final class ElasticMenuLinks
                 || !in_array($parts['scheme'] ?? '', ['elasticsearch', 'elastic', 'elasticsearch+https'], true)) {
                 continue;
             }
-            $result[$name] = ($parts['scheme'] === 'elasticsearch+https' ? 'https' : 'http')
+            $result[$name] = ('elasticsearch+https' === $parts['scheme'] ? 'https' : 'http')
                 .'://'.$parts['host'].':'.($parts['port'] ?? 9200);
         }
 
@@ -39,10 +39,10 @@ final class ElasticMenuLinks
 
     public static function kibana(?string $configured, array $endpoints, bool $debug): ?string
     {
-        if ($configured !== null) {
+        if (null !== $configured) {
             return self::safeUrl($configured);
         }
-        if (!$debug || $endpoints === []) {
+        if (!$debug || [] === $endpoints) {
             return null;
         }
         foreach ($endpoints as $endpoint) {

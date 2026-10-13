@@ -26,7 +26,7 @@ final class ElasticOutboxTest extends TestCase
     protected function setUp(): void
     {
         $url = getenv('ELASTIC_OUTBOX_TEST_DATABASE_URL') ?: null;
-        if ($url === null) {
+        if (null === $url) {
             self::markTestSkipped('Set ELASTIC_OUTBOX_TEST_DATABASE_URL to a Postgres database.');
         }
         $this->schema = 'elastic_outbox_test_'.bin2hex(random_bytes(4));

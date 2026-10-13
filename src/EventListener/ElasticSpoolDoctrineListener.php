@@ -8,8 +8,8 @@ use Doctrine\Bundle\DoctrineBundle\Attribute\AsDoctrineListener;
 use Doctrine\ORM\Event\OnClearEventArgs;
 use Doctrine\ORM\Event\PostFlushEventArgs;
 use Doctrine\ORM\Event\PostPersistEventArgs;
-use Doctrine\ORM\Event\PreRemoveEventArgs;
 use Doctrine\ORM\Event\PostUpdateEventArgs;
+use Doctrine\ORM\Event\PreRemoveEventArgs;
 use Doctrine\ORM\Events;
 use Psr\Log\LoggerInterface;
 use Survos\ElasticBundle\Message\ReindexDocuments;
@@ -42,20 +42,34 @@ final class ElasticSpoolDoctrineListener implements ResetInterface
         private readonly bool $async = true,
         private readonly int $batchSize = 500,
         private readonly ?ElasticIndexService $indexService = null,
-    ) {}
+    ) {
+    }
 
-    public function postPersist(PostPersistEventArgs $args): void { $this->collect($args); }
-    public function postUpdate(PostUpdateEventArgs $args): void { $this->collect($args); }
+    public function postPersist(PostPersistEventArgs $args): void
+    {
+        $this->collect($args);
+    }
+
+    public function postUpdate(PostUpdateEventArgs $args): void
+    {
+        $this->collect($args);
+    }
 
     // Doctrine clears generated identifiers before postRemove; capture them beforehand.
-    public function preRemove(PreRemoveEventArgs $args): void { $this->collect($args); }
+    public function preRemove(PreRemoveEventArgs $args): void
+    {
+        $this->collect($args);
+    }
 
     public function onClear(OnClearEventArgs $args): void
     {
         unset($this->pendingIds[spl_object_id($args->getObjectManager())]);
     }
 
-    public function reset(): void { $this->pendingIds = []; }
+    public function reset(): void
+    {
+        $this->pendingIds = [];
+    }
 
     public function postFlush(PostFlushEventArgs $args): void
     {
@@ -64,7 +78,7 @@ final class ElasticSpoolDoctrineListener implements ResetInterface
         unset($this->pendingIds[$managerId]);
         foreach ($pending as $class => $map) {
             $ids = array_map(strval(...), array_keys($map));
-            if ($this->bus === null || !$this->async) {
+            if (null === $this->bus || !$this->async) {
                 $this->spooler->appendIds($class, $ids);
                 continue;
             }
@@ -84,20 +98,26 @@ final class ElasticSpoolDoctrineListener implements ResetInterface
 
     private function collect(PostPersistEventArgs|PostUpdateEventArgs|PreRemoveEventArgs $args): void
     {
-        if (!$this->enabled) { return; }
+        if (!$this->enabled) {
+            return;
+        }
         $manager = $args->getObjectManager();
         $metadata = $manager->getClassMetadata($args->getObject()::class);
         $class = $metadata->getName(); // resolves Doctrine proxy subclasses
         if (!array_key_exists($class, $this->searchableClasses)) {
-            $this->searchableClasses[$class] = $this->indexService !== null
-                ? $this->indexService->forEntityClass($class) !== null
-                : $this->registry->forClass($class) !== null;
+            $this->searchableClasses[$class] = null !== $this->indexService
+                ? null !== $this->indexService->forEntityClass($class)
+                : null !== $this->registry->forClass($class);
         }
-        if (!$this->searchableClasses[$class]) { return; }
+        if (!$this->searchableClasses[$class]) {
+            return;
+        }
         $identifiers = $metadata->getIdentifierValues($args->getObject());
-        if (count($identifiers) !== 1) { return; }
+        if (1 !== count($identifiers)) {
+            return;
+        }
         $id = reset($identifiers);
-        if ($id !== null) {
+        if (null !== $id) {
             $this->pendingIds[spl_object_id($manager)][$class][(string) $id] = true;
         }
     }

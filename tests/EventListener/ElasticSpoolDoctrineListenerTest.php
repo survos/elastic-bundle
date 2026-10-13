@@ -37,7 +37,10 @@ final class ElasticSpoolDoctrineListenerTest extends TestCase
         $this->registry = new UxSearchRegistry([new UxSearchDescriptor(ListenerEntity::class, 'test', 'test', 'es')]);
     }
 
-    protected function tearDown(): void { (new Filesystem())->remove($this->directory); }
+    protected function tearDown(): void
+    {
+        (new Filesystem())->remove($this->directory);
+    }
 
     public function testDeletionKeepsIdWhenDoctrineClearsItBeforePostFlush(): void
     {
@@ -69,4 +72,7 @@ final class ElasticSpoolDoctrineListenerTest extends TestCase
     }
 }
 
-final class ListenerEntity { public ?int $id = 42; }
+final class ListenerEntity
+{
+    public ?int $id = 42;
+}

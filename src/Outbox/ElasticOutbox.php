@@ -56,16 +56,16 @@ final class ElasticOutbox
 
     public function isInstalled(Connection $connection, string $class): bool
     {
-        return (int) $connection->fetchOne(
+        return 3 === (int) $connection->fetchOne(
             'SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN (?, ?, ?)',
             $this->triggerNames($class),
-        ) === 3;
+        );
     }
 
     /** @return array{pending: int, claimed: int, oldest: ?string}|null null when the table was never created */
     public function stats(Connection $connection): ?array
     {
-        if ($connection->fetchOne('SELECT to_regclass(?)', [self::TABLE]) === null) {
+        if (null === $connection->fetchOne('SELECT to_regclass(?)', [self::TABLE])) {
             return null;
         }
         $row = $connection->fetchAssociative(sprintf(
@@ -81,6 +81,7 @@ final class ElasticOutbox
      * once every group succeeded; on failure the claim is released and the error rethrown.
      *
      * @param callable(class-string, list<string>): void $consume
+     *
      * @return int ids consumed
      */
     public function drain(Connection $connection, int $limit, callable $consume): int
@@ -95,7 +96,7 @@ final class ElasticOutbox
           RETURNING o.entity_class, o.entity_id',
             self::TABLE,
         ), [$token, self::CLAIM_LEASE, max(1, $limit)]);
-        if ($rows === []) {
+        if ([] === $rows) {
             return 0;
         }
 
@@ -130,9 +131,9 @@ final class ElasticOutbox
     {
         $native = $connection->getNativeConnection();
         if ($native instanceof \Pdo\Pgsql) {
-            $notified = $native->getNotify(\PDO::FETCH_ASSOC, max(0, $timeoutSeconds) * 1000) !== false;
+            $notified = false !== $native->getNotify(\PDO::FETCH_ASSOC, max(0, $timeoutSeconds) * 1000);
             // Several commits arrive as several notifications; one wake-up is enough.
-            while ($notified && $native->getNotify(\PDO::FETCH_ASSOC, 0) !== false) {
+            while ($notified && false !== $native->getNotify(\PDO::FETCH_ASSOC, 0)) {
             }
 
             return $notified;
@@ -141,11 +142,11 @@ final class ElasticOutbox
             $socket = pg_socket($native);
             $read = [$socket];
             $write = $except = null;
-            if (pg_get_notify($native) === false && stream_select($read, $write, $except, max(0, $timeoutSeconds)) > 0) {
+            if (false === pg_get_notify($native) && stream_select($read, $write, $except, max(0, $timeoutSeconds)) > 0) {
                 pg_consume_input($native);
             }
             $notified = false;
-            while (pg_get_notify($native) !== false) {
+            while (false !== pg_get_notify($native)) {
                 $notified = true;
             }
 

@@ -54,7 +54,7 @@ final class ElasticDataCollectorTest extends TestCase
         self::assertStringNotContainsString('secret', $command);
         self::assertStringNotContainsString('private', $command);
         // Substitute a harmless shell function for curl: inspect argv without making a request.
-        $process = new Process(['/bin/bash', '-c', 'curl() { printf "%s\\0" "$@"; }; ' . $command]);
+        $process = new Process(['/bin/bash', '-c', 'curl() { printf "%s\\0" "$@"; }; '.$command]);
         $process->mustRun();
         $args = explode("\0", rtrim($process->getOutput(), "\0"));
         self::assertSame('https://example.test:9243/proxy/books/_search', $args[4]);
@@ -92,9 +92,9 @@ final class ElasticDataCollectorTest extends TestCase
     public function testPanelEscapesCommandsAndRendersProfilerIcon(): void
     {
         $loader = new FilesystemLoader();
-        $loader->addPath(dirname(__DIR__, 2) . '/templates', 'SurvosElastic');
+        $loader->addPath(dirname(__DIR__, 2).'/templates', 'SurvosElastic');
         $reflection = new \ReflectionClass(\Symfony\Bundle\WebProfilerBundle\WebProfilerBundle::class);
-        $loader->addPath(dirname($reflection->getFileName()) . '/Resources/views', 'WebProfiler');
+        $loader->addPath(dirname($reflection->getFileName()).'/Resources/views', 'WebProfiler');
         $twig = new Environment($loader, ['strict_variables' => true, 'autoescape' => 'html']);
         $template = $twig->load('@SurvosElastic/data_collector/elastic.html.twig');
         $collector = $this->collector(['query' => ['match' => ['title' => '\"><script>alert(1)</script>']]], 'http://localhost:9200');

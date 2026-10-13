@@ -8,7 +8,6 @@ use Survos\ElasticBundle\Model\FieldIntent;
 use Survos\ElasticBundle\Model\IndexReport;
 use Survos\ElasticBundle\Model\SchemaCheck;
 
-
 /**
  * Compares what a search *declares* against what Elasticsearch actually *holds*.
  *
@@ -101,8 +100,8 @@ final readonly class ElasticIndexInspector
      * mapping — the "why isn't my facet showing up" table.
      *
      * @param list<\Survos\FieldBundle\Model\FieldDescriptor> $descriptors
-     * @param array<string, mixed>                           $parameters
-     * @param array<string, mixed>                           $mapping     the live `mappings` block
+     * @param array<string, mixed>                            $parameters
+     * @param array<string, mixed>                            $mapping     the live `mappings` block
      *
      * @return list<FieldIntent>
      */
@@ -189,7 +188,7 @@ final readonly class ElasticIndexInspector
     /** @param list<string> $aliases */
     private function checkAlias(array $aliases): SchemaCheck
     {
-        if ($aliases !== []) {
+        if ([] !== $aliases) {
             return SchemaCheck::ok('alias', 'Alias', sprintf('Served through %s — a reindex can swap atomically.', implode(', ', $aliases)));
         }
 
@@ -207,7 +206,7 @@ final readonly class ElasticIndexInspector
         $analyzers = [];
         foreach ($settings as $key => $value) {
             // Flat settings: index.analysis.analyzer.<name>.<option>
-            if (\is_string($key) && preg_match('#^index\.analysis\.analyzer\.([^.]+)\.#', $key, $m) === 1) {
+            if (\is_string($key) && 1 === preg_match('#^index\.analysis\.analyzer\.([^.]+)\.#', $key, $m)) {
                 $analyzers[$m[1]] = true;
             }
         }
@@ -230,7 +229,7 @@ final readonly class ElasticIndexInspector
             );
         }
 
-        if ($analyzers !== []) {
+        if ([] !== $analyzers) {
             return SchemaCheck::ok('analysis', 'Analyzers', sprintf(
                 'Custom analyzer configured: %s%s.',
                 implode(', ', array_keys($analyzers)),
@@ -285,19 +284,19 @@ final readonly class ElasticIndexInspector
             }
         }
 
-        if ($missing === [] && $unexpected === [] && $retyped === []) {
+        if ([] === $missing && [] === $unexpected && [] === $retyped) {
             return SchemaCheck::ok('drift', 'Schema drift', sprintf('%d declared fields, all present and correctly typed.', \count($declared)));
         }
 
         $parts = [];
-        if ($retyped !== []) {
+        if ([] !== $retyped) {
             // Worst case: the running index cannot be corrected in place at all.
             $parts[] = sprintf('type mismatch on %s — this cannot be fixed in place, it needs a reindex', implode(', ', $retyped));
         }
-        if ($missing !== []) {
+        if ([] !== $missing) {
             $parts[] = sprintf('declared but absent from Elasticsearch: %s (the index predates a mapping change)', implode(', ', $missing));
         }
-        if ($unexpected !== []) {
+        if ([] !== $unexpected) {
             $parts[] = sprintf('present in Elasticsearch but never declared: %s (added by dynamic mapping from indexed documents)', implode(', ', $unexpected));
         }
 

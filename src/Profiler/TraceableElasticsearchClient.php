@@ -22,7 +22,8 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
         private ElasticCallRecorder $recorder,
         private ?Stopwatch $stopwatch = null,
         private ?string $endpoint = null,
-    ) {}
+    ) {
+    }
 
     public function search(string $index, array $body): array
     {
@@ -174,13 +175,14 @@ final readonly class TraceableElasticsearchClient implements ElasticsearchClient
     }
 
     /**
-     * @param array<string, mixed> $body
+     * @param array<string, mixed>             $body
      * @param callable(): array<string, mixed> $run
+     *
      * @return array<string, mixed>
      */
     private function record(string $operation, string $index, array $body, callable $run): array
     {
-        $event = $this->stopwatch?->start('elasticsearch.' . $operation, 'elasticsearch');
+        $event = $this->stopwatch?->start('elasticsearch.'.$operation, 'elasticsearch');
         $start = microtime(true);
         $response = [];
         $error = null;

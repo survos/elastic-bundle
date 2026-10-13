@@ -15,7 +15,8 @@ final readonly class RemoveDocumentsHandler
     public function __construct(
         private ElasticIndexService $indexService,
         private ?LoggerInterface $logger = null,
-    ) {}
+    ) {
+    }
 
     public function __invoke(RemoveDocuments $message): void
     {

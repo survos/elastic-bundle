@@ -16,7 +16,13 @@ final class ReindexDocumentsHandlerTest extends TestCase
     {
         $reconciler = new class implements DocumentReconcilerInterface {
             public array $calls = [];
-            public function indexIds(string $class, array $ids): int { $this->calls[] = [$class, $ids]; return count($ids); }
+
+            public function indexIds(string $class, array $ids): int
+            {
+                $this->calls[] = [$class, $ids];
+
+                return count($ids);
+            }
         };
         $handler = new ReindexDocumentsHandler($reconciler, batchSize: 3, idleTimeout: 0);
 
@@ -38,7 +44,10 @@ final class ReindexDocumentsHandlerTest extends TestCase
         $reconciler = new class implements DocumentReconcilerInterface {
             public function indexIds(string $class, array $ids): int
             {
-                if ($class === 'App\Broken') { throw new \RuntimeException('index missing'); }
+                if ('App\Broken' === $class) {
+                    throw new \RuntimeException('index missing');
+                }
+
                 return count($ids);
             }
         };
@@ -58,7 +67,10 @@ final class ReindexDocumentsHandlerTest extends TestCase
     public function testWithoutAcknowledgerHandlesSynchronously(): void
     {
         $reconciler = new class implements DocumentReconcilerInterface {
-            public function indexIds(string $class, array $ids): int { return count($ids); }
+            public function indexIds(string $class, array $ids): int
+            {
+                return count($ids);
+            }
         };
 
         self::assertSame(2, (new ReindexDocumentsHandler($reconciler))(new ReindexDocuments('App\Asset', ['a', 'b'])));

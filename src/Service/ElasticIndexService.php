@@ -11,7 +11,6 @@ use Survos\ElasticBundle\Message\ReindexDocuments;
 use Survos\ElasticBundle\Model\IndexReport;
 use Survos\ElasticBundle\Outbox\ElasticOutbox;
 use Survos\ElasticBundle\Spool\ElasticSpooler;
-use Symfony\Component\Messenger\MessageBusInterface;
 use Survos\SearchBundle\Adapter\AdapterProvider;
 use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientInterface;
 use Survos\SearchBundle\Registry\UxSearchRegistry;
@@ -23,6 +22,7 @@ use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Attribute\Option;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Style\SymfonyStyle;
+use Symfony\Component\Messenger\MessageBusInterface;
 use Symfony\Component\OptionsResolver\OptionsResolver;
 
 /**
@@ -49,7 +49,8 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         private readonly ?string $indexPattern = null,
         private readonly ?MessageBusInterface $bus = null,
         private readonly ?ElasticOutbox $outbox = null,
-    ) {}
+    ) {
+    }
 
     #[AsCommand('elastic:index:create', 'Create the Elasticsearch index and mapping for a search')]
     public function createCommand(
@@ -73,7 +74,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $alias = $this->nameResolver->uid($search);
 
             // Before the index checks below, which may skip to the next search.
-            if ($triggers !== null) {
+            if (null !== $triggers) {
                 $this->applyTriggers($io, $descriptor->code, $descriptor->class, $triggers);
             }
 
@@ -321,17 +322,15 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $exists = $client->indexExists($index);
             $docs = $exists ? ($client->search($index, ['size' => 0, 'track_total_hits' => true])['hits']['total']['value'] ?? 0) : 0;
             $target = $this->outboxTarget($descriptor->class);
-            $triggers = $target === null ? 'n/a' : ($this->outbox->isInstalled($target[0], $descriptor->class) ? 'yes' : 'no');
+            $triggers = null === $target ? 'n/a' : ($this->outbox->isInstalled($target[0], $descriptor->class) ? 'yes' : 'no');
             $rows[] = [$descriptor->code, $index, $exists ? 'yes' : 'no', $docs, count($parameters['mappings'] ?? []), $triggers];
-        }
-
-        $rows === []
+        }[] === $rows
             ? $io->warning('No Elasticsearch-backed searches are registered.')
             : $io->table(['search', 'index', 'exists', 'documents', 'mapped fields', 'triggers'], $rows);
 
         foreach ($this->outboxConnections() as $connection) {
             $stats = $this->outbox->stats($connection);
-            if ($stats !== null) {
+            if (null !== $stats) {
                 $io->text(sprintf('elastic_outbox: %d pending (%d claimed), oldest %s', $stats['pending'], $stats['claimed'], $stats['oldest'] ?? '—'));
             }
         }
@@ -349,8 +348,8 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         #[Option('Dispatch through Messenger instead of indexing inline')]
         bool $async = false,
     ): int {
-        $classes = $class !== null ? [$class] : $this->spooler->spooledClasses();
-        if ($classes === []) {
+        $classes = null !== $class ? [$class] : $this->spooler->spooledClasses();
+        if ([] === $classes) {
             $io->success('Spool is empty.');
 
             return Command::SUCCESS;
@@ -360,7 +359,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $this->spooler->drain($entityClass, function (array $ids) use ($async, $batchSize, $entityClass, $io): void {
                 foreach (array_chunk($ids, max(1, $batchSize)) as $chunk) {
                     if ($async) {
-                        if ($this->bus === null) {
+                        if (null === $this->bus) {
                             throw new \RuntimeException('--async needs symfony/messenger and a bus.');
                         }
                         $this->bus->dispatch(new ReindexDocuments($entityClass, $chunk));
@@ -389,13 +388,13 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         #[Option('Exit after this many seconds')]
         ?int $timeLimit = null,
     ): int {
-        if ($dispatch && $this->bus === null) {
+        if ($dispatch && null === $this->bus) {
             $io->error('--dispatch needs symfony/messenger and a bus.');
 
             return Command::FAILURE;
         }
         $connections = $this->outboxConnections();
-        if ($connections === []) {
+        if ([] === $connections) {
             $io->warning('No Elasticsearch-backed search is stored in Postgres; nothing can feed elastic_outbox.');
 
             return Command::SUCCESS;
@@ -404,7 +403,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $this->outbox->listen($connection);
         }
 
-        $deadline = $timeLimit !== null ? time() + $timeLimit : null;
+        $deadline = null !== $timeLimit ? time() + $timeLimit : null;
         $consume = function (string $class, array $ids) use ($dispatch, $io): void {
             if ($dispatch) {
                 $this->bus->dispatch(new ReindexDocuments($class, $ids));
@@ -417,7 +416,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             $io->text(sprintf('%s %s: %d ids', date('H:i:s'), $class, count($ids)));
         };
 
-        while ($deadline === null || time() < $deadline) {
+        while (null === $deadline || time() < $deadline) {
             $drained = 0;
             foreach ($connections as $connection) {
                 try {
@@ -437,7 +436,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             if ($once) {
                 break;
             }
-            $this->outbox->wait($connections[0], $deadline === null ? $idleTimeout : max(0, min($idleTimeout, $deadline - time())));
+            $this->outbox->wait($connections[0], null === $deadline ? $idleTimeout : max(0, min($idleTimeout, $deadline - time())));
         }
 
         return Command::SUCCESS;
@@ -450,23 +449,23 @@ final class ElasticIndexService implements DocumentReconcilerInterface
      * carries ids, never documents, so duplicate messages are cheap and an entity flushed four
      * times during an import is reconciled once, from whatever state it ended up in.
      *
-     * @param class-string $class
+     * @param class-string     $class
      * @param list<int|string> $ids
      */
     public function indexIds(string $class, array $ids): int
     {
-        if ($ids === []) {
+        if ([] === $ids) {
             return 0;
         }
 
         $resolved = $this->forEntityClass($class);
-        if ($resolved === null) {
+        if (null === $resolved) {
             return 0;
         }
         [$descriptor, $client, $parameters, $search] = $resolved;
 
         $manager = $this->managerRegistry->getManagerForClass($class);
-        if ($manager === null) {
+        if (null === $manager) {
             return 0;
         }
 
@@ -479,7 +478,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
 
         $foundIds = array_map(fn (object $entity): string => (string) $manager->getClassMetadata($class)->getIdentifierValues($entity)[$this->identifierField($manager, $class)], $entities);
         $missingIds = array_values(array_diff(array_map(strval(...), $ids), $foundIds));
-        if ($missingIds !== []) {
+        if ([] !== $missingIds) {
             $this->deleteIds($class, $missingIds);
         }
 
@@ -499,7 +498,8 @@ final class ElasticIndexService implements DocumentReconcilerInterface
      * detect_noop can skip it.
      *
      * @param iterable<array{id: string, document: array<string, mixed>}> $documents
-     * @param list<string> $fields
+     * @param list<string>                                                $fields
+     *
      * @return \Generator<int, array{id: string, document: array<string, mixed>}>
      */
     private function withMappedNulls(iterable $documents, array $fields): \Generator
@@ -515,17 +515,17 @@ final class ElasticIndexService implements DocumentReconcilerInterface
      * Remove documents whose entities are gone. Ids only -- by the time the worker runs, the
      * rows no longer exist to be loaded.
      *
-     * @param class-string $class
+     * @param class-string     $class
      * @param list<int|string> $ids
      */
     public function deleteIds(string $class, array $ids): int
     {
-        if ($ids === []) {
+        if ([] === $ids) {
             return 0;
         }
 
         $resolved = $this->forEntityClass($class);
-        if ($resolved === null) {
+        if (null === $resolved) {
             return 0;
         }
         [$descriptor, $client, $parameters, $search] = $resolved;
@@ -545,12 +545,8 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         // fine and must not be treated as an error -- the spool is intentionally over-inclusive.
         foreach ($response['items'] ?? [] as $item) {
             $error = $item['delete']['error'] ?? null;
-            if ($error !== null) {
-                throw new \RuntimeException(sprintf(
-                    'Elasticsearch rejected delete of "%s": %s',
-                    $item['delete']['_id'] ?? '?',
-                    json_encode($error, JSON_UNESCAPED_SLASHES),
-                ));
+            if (null !== $error) {
+                throw new \RuntimeException(sprintf('Elasticsearch rejected delete of "%s": %s', $item['delete']['_id'] ?? '?', json_encode($error, JSON_UNESCAPED_SLASHES)));
             }
         }
 
@@ -559,6 +555,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
 
     /**
      * @param class-string $class
+     *
      * @return array{0: object, 1: ElasticsearchClientInterface, 2: array<string, mixed>}|null
      */
     public function forEntityClass(string $class): ?array
@@ -573,7 +570,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             ]);
             $adapter = $this->adapterProvider->getAdapter($search->getAdapterName());
             $client = $this->clientOf($adapter);
-            if ($client === null) {
+            if (null === $client) {
                 continue;
             }
 
@@ -591,7 +588,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
     private function applyTriggers(SymfonyStyle $io, string $code, string $class, bool $install): void
     {
         $target = $this->outboxTarget($class);
-        if ($target === null) {
+        if (null === $target) {
             $io->note(sprintf('%s: triggers need Doctrine on Postgres; changes keep flowing through the postFlush listener.', $code));
 
             return;
@@ -608,16 +605,17 @@ final class ElasticIndexService implements DocumentReconcilerInterface
 
     /**
      * @param class-string $class
+     *
      * @return array{0: Connection, 1: string, 2: string}|null connection, quoted table, id column
      */
     private function outboxTarget(string $class): ?array
     {
-        $manager = $this->outbox !== null ? $this->managerRegistry->getManagerForClass($class) : null;
+        $manager = null !== $this->outbox ? $this->managerRegistry->getManagerForClass($class) : null;
         if (!$manager instanceof EntityManagerInterface || !ElasticOutbox::supports($manager->getConnection())) {
             return null;
         }
         $metadata = $manager->getClassMetadata($class);
-        if (count($metadata->getIdentifierFieldNames()) !== 1) {
+        if (1 !== count($metadata->getIdentifierFieldNames())) {
             return null; // composite keys are skipped by the listener too
         }
         $connection = $manager->getConnection();
@@ -631,11 +629,11 @@ final class ElasticIndexService implements DocumentReconcilerInterface
     {
         $connections = [];
         foreach ($this->registry->all() as $descriptor) {
-            if ($this->forEntityClass($descriptor->class) === null) {
+            if (null === $this->forEntityClass($descriptor->class)) {
                 continue;
             }
             $target = $this->outboxTarget($descriptor->class);
-            if ($target !== null) {
+            if (null !== $target) {
                 $connections[spl_object_id($target[0])] = $target[0];
             }
         }
@@ -866,7 +864,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
     /** @return list<object> */
     private function descriptors(?string $code): array
     {
-        return $code === null
+        return null === $code
             ? $this->registry->all()
             : array_values(array_filter(
                 $this->registry->all(),
@@ -879,8 +877,8 @@ final class ElasticIndexService implements DocumentReconcilerInterface
      */
     private function resolve(SymfonyStyle $io, ?string $code): \Generator
     {
-        if ($this->descriptors($code) === []) {
-            $io->warning($code === null ? 'No searches are registered.' : sprintf('No search registered for "%s".', $code));
+        if ([] === $this->descriptors($code)) {
+            $io->warning(null === $code ? 'No searches are registered.' : sprintf('No search registered for "%s".', $code));
 
             return;
         }
@@ -902,7 +900,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             ]);
             $adapter = $this->adapterProvider->getAdapter($search->getAdapterName());
             $client = $this->clientOf($adapter);
-            if ($client === null) {
+            if (null === $client) {
                 continue; // not Elasticsearch-backed; nothing for this bundle to do
             }
 
@@ -938,8 +936,9 @@ final class ElasticIndexService implements DocumentReconcilerInterface
     /** @param array<string, mixed> $parameters */
 
     /**
-     * @param class-string $class
+     * @param class-string         $class
      * @param array<string, mixed> $parameters
+     *
      * @return \Generator<int, array{id: string, document: array<string, mixed>}>
      */
     private function documents(string $class, array $parameters, ?int $limit): \Generator
@@ -963,7 +962,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         $mapper = $parameters['documentMapper'] ?? null;
         $count = 0;
         foreach ($provider as $source) {
-            if ($limit !== null && $count >= $limit) {
+            if (null !== $limit && $count >= $limit) {
                 return;
             }
             $document = is_callable($mapper) ? $mapper($source) : $this->mapDocument($source, $fields);
@@ -979,7 +978,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
 
             yield ['id' => (string) $id, 'document' => $document];
             ++$count;
-            if ($manager !== null && is_object($source)) {
+            if (null !== $manager && is_object($source)) {
                 $manager->detach($source);
             }
         }
@@ -1025,7 +1024,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
                 $pending = 0;
             }
         }
-        if ($body !== []) {
+        if ([] !== $body) {
             $this->flush($client, $body);
         }
         // Incremental writes never force a refresh: each one creates a segment, and a stream of
@@ -1048,18 +1047,15 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         foreach ($response['items'] ?? [] as $item) {
             $result = is_array($item) ? (reset($item) ?: []) : [];
             $error = $result['error'] ?? null;
-            if ($error !== null) {
-                throw new \RuntimeException(sprintf(
-                    'Elasticsearch rejected document "%s": %s',
-                    $result['_id'] ?? '?',
-                    json_encode($error, JSON_UNESCAPED_SLASHES),
-                ));
+            if (null !== $error) {
+                throw new \RuntimeException(sprintf('Elasticsearch rejected document "%s": %s', $result['_id'] ?? '?', json_encode($error, JSON_UNESCAPED_SLASHES)));
             }
         }
     }
 
     /**
      * @param string[] $fields
+     *
      * @return array<string, mixed>
      */
     private function mapDocument(mixed $source, array $fields): array
@@ -1100,7 +1096,7 @@ final class ElasticIndexService implements DocumentReconcilerInterface
             return $property->isInitialized($source) ? $property->getValue($source) : null;
         }
         foreach (['get', 'is', ''] as $prefix) {
-            $method = $prefix === '' ? $field : $prefix . ucfirst($field);
+            $method = '' === $prefix ? $field : $prefix.ucfirst($field);
             if ($rc->hasMethod($method)) {
                 return $rc->getMethod($method)->invoke($source);
             }

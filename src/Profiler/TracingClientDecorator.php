@@ -15,7 +15,8 @@ final readonly class TracingClientDecorator implements ElasticsearchClientDecora
     public function __construct(
         private ElasticCallRecorder $recorder,
         private ?Stopwatch $stopwatch = null,
-    ) {}
+    ) {
+    }
 
     public function decorate(ElasticsearchClientInterface $client): ElasticsearchClientInterface
     {
