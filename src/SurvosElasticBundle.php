@@ -24,7 +24,7 @@ use Survos\Kit\SurvosKitBundle;
 use Survos\Kit\Traits\HasConfigurableRoutes;
 use Survos\SearchBundle\Adapter\Elasticsearch\ElasticsearchClientDecoratorInterface;
 use Survos\SearchBundle\SurvosSearchBundle;
-use Survos\TablerBundle\Event\MenuEvent;
+use Survos\TablerBundle\Menu\MenuBuilderTrait;
 use Symfony\Bundle\FrameworkBundle\DataCollector\AbstractDataCollector;
 use Symfony\Component\Config\Definition\Configurator\DefinitionConfigurator;
 use Symfony\Component\DependencyInjection\ContainerBuilder;
@@ -127,7 +127,7 @@ final class SurvosElasticBundle extends AbstractSurvosBundle
 
         // Menu subscribers are deliberately not auto-scanned (see AbstractSurvosBundle), so this
         // has to be explicit. It self-disables when no Elasticsearch-backed search is registered.
-        if (class_exists(MenuEvent::class)) {
+        if (trait_exists(MenuBuilderTrait::class)) {
             $services->set(ElasticMenuSubscriber::class)
                 ->arg('$kibanaUrl', $config['kibana_url'])
                 ->arg('$elasticvueUrl', $config['elasticvue_url'])

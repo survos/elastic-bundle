@@ -5,11 +5,12 @@ declare(strict_types=1);
 namespace Survos\ElasticBundle\Menu;
 
 use Survos\ElasticBundle\Service\ElasticIndexService;
-use Survos\TablerBundle\Event\MenuEvent;
+use Survos\MenuBundle\Attribute\AsMenuListener;
+use Survos\MenuBundle\Event\MenuEvent;
+use Survos\MenuBundle\MenuSlot;
 use Survos\TablerBundle\Menu\MenuBuilderTrait;
 use Survos\TablerBundle\Service\IconService;
 use Survos\TablerBundle\Service\RouteAliasService;
-use Symfony\Component\EventDispatcher\Attribute\AsEventListener;
 use Symfony\Component\Routing\RouterInterface;
 
 /**
@@ -45,7 +46,7 @@ final class ElasticMenuSubscriber
     ) {
     }
 
-    #[AsEventListener(event: MenuEvent::ADMIN_NAVBAR_MENU)]
+    #[AsMenuListener(MenuSlot::ADMIN_NAVBAR_MENU)]
     public function onAdminNavbarMenu(MenuEvent $event): void
     {
         // Registry-only, no HTTP. This subscriber must never call Elasticsearch: Twig's
