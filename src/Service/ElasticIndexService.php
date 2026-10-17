@@ -237,6 +237,62 @@ final class ElasticIndexService implements DocumentReconcilerInterface
         return Command::SUCCESS;
     }
 
+    /**
+     * Index a given set of documents into a search's index, for sources that are not Doctrine
+     * entities (e.g. rows read out of a folio). The documents are shaped like the ones the search's
+     * documentProvider yields; ids are the search's idField, and a document replaces any with the same id.
+     * Creates the index with its declared mapping when it does not exist yet.
+     *
+     * @param iterable<array<string, mixed>> $documents
+     */
+    public function indexDocuments(string $code, iterable $documents, int $batchSize = 250): int
+    {
+        $total = 0;
+        foreach ($this->searches($code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
+            if (!$client->indexExists($index)) {
+                $concrete = $this->createGeneration($client, $search, $parameters, true);
+                $client->updateAliases([['add' => ['index' => $concrete, 'alias' => $index]]]);
+            }
+            $idField = (string) $parameters['idField'];
+            $blank = array_fill_keys(array_keys($parameters['mappings'] ?? []), null);
+            $items = (function () use ($documents, $idField, $blank): \Generator {
+                foreach ($documents as $document) {
+                    $document = array_map($this->normalize(...), $document);
+                    $id = $document[$idField] ?? throw new \LogicException(sprintf('Document has no "%s" id field.', $idField));
+                    yield ['id' => (string) $id, 'document' => $document + $blank];
+                }
+            })();
+            $total += $this->bulkIndex($client, $index, $items, max(1, $batchSize));
+        }
+
+        return $total;
+    }
+
+    /**
+     * Remove documents by id from a search's index (see indexDocuments()).
+     *
+     * @param list<int|string> $ids
+     */
+    public function deleteDocuments(string $code, array $ids): int
+    {
+        $removed = 0;
+        foreach ($this->searches($code) as [$descriptor, $client, $parameters, $search]) {
+            $index = $this->nameResolver->uid($search);
+            if ([] === $ids || !$client->indexExists($index)) {
+                continue;
+            }
+            $body = [];
+            foreach ($ids as $id) {
+                $body[] = ['delete' => ['_index' => $index, '_id' => (string) $id]];
+            }
+            $client->bulk($body);
+            $removed += count($ids);
+        }
+
+        return $removed;
+    }
+
     #[AsCommand('elastic:index:delete', 'Delete the Elasticsearch index for a search')]
     public function deleteCommand(
         SymfonyStyle $io,
